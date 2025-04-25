@@ -1,0 +1,3154 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+#env setting
+
+```{r,R enviroment activiation,include=FALSE}
+renv::activate(project = "~/my_SCP_env")
+```
+
+```{r,include=FALSE}
+#library(ISCHIA)
+library(SCP)
+library(ggpubr)
+library(future)
+library(Seurat)
+library(Matrix)
+library(dplyr)
+library(AnnotationHub)
+library(future)
+library(future.apply)
+library(ggplot2)
+library(RColorBrewer)
+library(ggsci)
+library(gtools)
+library(scatterpie)
+library(harmony)
+library(UCell)
+library(tidyr)
+library(stringr)
+library(dplyr)
+library(RColorBrewer)
+library(BASS)
+library(Lamian)
+library(GeneTrajectory)
+library(ggVolcano)
+library(ggvenn)
+library(eulerr)
+library(Hmisc)
+library(scMetabolism)
+library(ggplot2)
+library(rsvd)
+library(psupertime)
+library(ggnewscale)
+library(UpSetR)
+library(spacexr)
+library(tidyverse)
+library(clusterProfiler)
+library(STdeconvolve)
+library(SONAR)
+library(EnrichedHeatmap)
+library(circlize)
+library(CellChat)
+library(patchwork)
+#library(BioEnricher)
+library(SPATAwrappers)
+library(SPATA2)
+library(scMaSigPro)
+```
+
+
+```{r,multicore setting,include=FALSE}
+nbrOfWorkers()
+plan(multisession, workers=1)
+nbrOfWorkers()
+options(Seurat.object.assay.version = 'v4')#### very important!!!!!!
+```
+
+# Data preprocessing and zonation annotation
+
+## EDA
+
+```{r,EDA,include=FALSE}
+raw.xdbit<- PercentageFeatureSet(raw.xdbit, pattern = "^mt-", col.name = "percent.mt")
+
+#nFeature
+raw.xdbit$nGene<-raw.xdbit$nFeature_counts
+FeatureStatPlot(raw.xdbit, stat.by = "nGene", group.by = "id", add_box = TRUE,
+                palette = "Paired")
+ggsave(filename = "R figures/QC/nGene-id.pdf",width = 8,height = 4)
+
+
+#nCount
+raw.xdbit$nCount<-raw.xdbit$nCount_counts
+
+FeatureStatPlot(raw.xdbit, stat.by = "nCount", group.by = "id", add_box = TRUE,
+                palette ="Paired")
+ggsave(filename = "R figures/QC/nCount-id.pdf",width = 8,height = 4)
+
+
+
+# Complexity
+raw.xdbit$Complexity<-raw.xdbit$nFeature_counts/raw.xdbit$nCount_counts
+
+FeatureStatPlot(raw.xdbit, stat.by = "Complexity", group.by = "id", add_box = TRUE,
+                palette  ="Paired")
+ggsave(filename = "R figures/QC/Complexity-id.pdf",width = 8,height = 4)
+
+
+# percent.mt
+FeatureStatPlot(raw.xdbit, stat.by = "percent.mt", group.by = "id", add_box = TRUE,
+                palette = "Paired")
+ggsave(filename = "R figures/QC/percent mt-id.pdf",width = 8,height = 4)
+
+
+CellDimPlot(raw.xdbit,group.by = "id",reduction = "umap")
+
+ggsave(filename = "R figures/QC/Dimplot-id before integration.pdf",width = 8,height = 4)
+
+CellDimPlot(raw.xdbit,group.by = "experiment_id",reduction = "umap")
+
+ggsave(filename = "R figures/QC/Dimplot-experiment id before integration.pdf",width = 8,height = 4)
+
+CellDimPlot(raw.xdbit,group.by = "mouse_id",reduction = "umap")
+
+ggsave(filename = "R figures/QC/Dimplot-mouse id before integration.pdf",width = 8,height = 4)
+```
+
+## preprocessing
+
+```{r,pp,include=FALSE}
+raw.xdbit <- NormalizeData(raw.xdbit,
+                          normalization.method = "LogNormalize", 
+                          scale.factor = 100000)
+
+raw.xdbit <- FindVariableFeatures(raw.xdbit, 
+                                 selection.method = "vst",
+                                 nfeatures = 3000)
+
+raw.xdbit<- ScaleData(raw.xdbit,vars.to.regress =c("nGene","nCount","percent.mt"),verbose = F)
+
+raw.xdbit<- RunPCA(raw.xdbit , npcs = 50, verbose = FALSE)
+
+raw.xdbit<- FindNeighbors(object =raw.xdbit  , dims = 1:30, verbose = FALSE)
+
+raw.xdbit <- FindClusters(object = raw.xdbit, reduction.type = "pca", dims.use = 1:30, 
+    resolution = 0.1, print.output = FALSE) 
+```
+
+## integration
+
+```{r,include=FALSE}
+integrated.xDbit<-RunHarmony(raw.xdbit,
+                          group.by.vars = "mouse_id",
+                           dims.use = 1:30,
+                          plot_convergence=T) 
+
+```
+
+```{r,add raw count}
+raw.count<-read.csv(file ="raw_counts.csv",header = T )
+
+raw.count<-as.data.frame(t(raw.count))
+
+colnames(raw.count)<-raw.count[1,]
+
+raw.count<-raw.count[-1,]
+
+raw.count <- apply(raw.count, 2, function(x) as.numeric(trimws(x)))
+
+rownames(raw.count)<-rownames(integrated.xDbit)
+
+sparse.count<- as(as.matrix(raw.count), "sparseMatrix")
+
+cell.index<-colnames(integrated.xDbit)
+
+sparse.count<-sparse.count[,which(colnames(sparse.count) %in% cell.index)]
+
+raw.count<-CreateAssayObject(counts = sparse.count, min.cells = 0,
+  min.features = 0)
+
+integrated.xDbit[["Raw"]]<-raw.count
+
+save(integrated.xDbit,file = "filter data.RData")
+```
+
+
+```{r,include=FALSE}
+
+integrated.xDbit<- RunUMAP(integrated.xDbit, dims = 1:20,
+                    n.neighbors = 100L,
+                    min.dist = 0.9,reduction = "harmony")
+
+integrated.xDbit<- FindNeighbors(integrated.xDbit, dims = 1:30,reduction = "harmony")
+integrated.xDbit<- FindClusters(
+  integrated.xDbit,
+  resolution = 0.1,reduction = "harmony"
+)
+
+save(integrated.xDbit,file = "integrated xDbit.RData")
+```
+
+
+```{r,vis after integration,include=FALSE}
+CellDimPlot(integrated.xDbit,group.by = "id",reduction = "umap")
+ggsave(filename = "R figures/Integration and annotation/Dimplot-id after integration.pdf",width = 6,height = 4)
+
+CellDimPlot(integrated.xDbit,group.by = "experiment_id",reduction = "umap", palette = "Dark2")
+ggsave(filename = "R figures/Integration and annotation/Dimplot-experiment_id after integration.pdf",width = 6,height = 4)
+
+CellDimPlot(integrated.xDbit,group.by = "mouse_id",reduction = "umap", palette = "Set2")
+ggsave(filename = "R figures/Integration and annotation/Dimplot-mouse id after integration.pdf",width = 6,height = 4)
+
+CellDimPlot(integrated.xDbit,group.by = "seurat_clusters",reduction = "umap")
+ggsave(filename = "R figures/Integration and annotation/Dimplot-seurat clusters after integration.pdf",width = 6,height = 4)
+
+```
+
+## clustering
+
+```{r,plot spatial plot with seu cluster,include=FALSE}
+slice.list<-SplitObject(integrated.xDbit, split.by = "id")
+for (i in 1:length(slice.list)) {
+  
+  tmp<-slice.list[[i]]
+
+CellDimPlot(srt =tmp ,group.by = "seurat_clusters",
+              reduction = "spatial",
+              bg_color = "black",
+              pt.size = 2,
+              palette = "Set3",
+              theme_use = "theme_blank")+
+    ggtitle(names(slice.list[i]))+
+    theme(plot.background = element_rect(fill = "black", color = "black"),
+          panel.background = element_rect(fill = "black", color = "black"),
+          plot.margin = unit(c(1,1,1,1), "lines"), 
+          text = element_text(color = "white"), 
+          axis.title = element_text(color = "white"), 
+          axis.text = element_text(color = "white"),
+          legend.title = element_text(color = "white"), 
+          legend.text = element_text(color = "white"), 
+          plot.title = element_text(color = "white", hjust = 0.5)) +
+    theme(aspect.ratio = 1)
+
+    
+ggsave(filename = paste0("R figures/clustering/SpatialClusterPlot-",
+                           names(slice.list[i]),
+                           ".png"),
+       bg = "black", dpi = 150)
+
+ggsave(filename = paste0("R figures/clustering/SpatialClusterPlot-",
+                           names(slice.list[i]),
+                           ".pdf"), 
+       bg = "black",dpi = 150)
+  rm(tmp)
+  
+}
+
+```
+
+## remove low-quality edge spot
+
+```{r,filter,include=FALSE}
+integrated.xDbit<-SetIdent(integrated.xDbit,value = "seurat_clusters")
+integrated.xDbit<-subset(integrated.xDbit,idents=c( "0","1","2"))
+save(integrated.xDbit,file = "filter data.Rdata")
+```
+
+```{r,check,include=FALSE}
+CellDimPlot(integrated.xDbit,group.by = "seurat_clusters")
+ggsave(filename = "R figures/clustering/Dimplot after filtering.pdf", 
+      dpi = 150)
+ggsave(filename = "R figures/clustering/Dimplot after filtering.png", 
+       dpi = 150)
+```
+
+
+## zonation annotation
+
+```{r,check the marker,include=FALSE}
+FeatureDimPlot(integrated.xDbit,features = "Cyp2e1",palette = "RdYlBu",
+            theme_use = "theme_blank",
+            raster = F)#Hep_CV
+
+ggsave(filename = "H:/Celia group/xDbit(s4) project(renew)/R figures/Integration and annotation/Dimplot-Cyp2e1 after integration.pdf",width = 4,height = 4,dpi = 150)
+ggsave(filename = "H:/Celia group/xDbit(s4) project(renew)/R figures/Integration and annotation/Dimplot-Cyp2e1 after integration.png",width = 4,height = 4,dpi = 150)
+
+FeatureDimPlot(integrated.xDbit,features = "Cyp2f2",palette = "PiYG",
+            theme_use = "theme_blank",
+            raster = F)#Hep_PV
+ggsave(filename = "H:/Celia group/xDbit(s4) project(renew)/R figures/Integration and annotation/Dimplot-Cyp2f2 after integration.pdf",width = 4,height = 4,dpi = 150)
+ggsave(filename = "H:/Celia group/xDbit(s4) project(renew)/R figures/Integration and annotation/Dimplot-Cyp2f2 after integration.png",width = 4,height = 4,dpi = 150)
+
+FeatureDimPlot(integrated.xDbit,features = "Igfbp2",palette = "BrBG",
+            theme_use = "theme_blank",
+            raster = F)#Hep_Mid
+ggsave(filename = "H:/Celia group/xDbit(s4) project(renew)/R figures/Integration and annotation/Dimplot-Igfbp2 after integration.pdf",width = 4,height = 4,dpi = 150)
+ggsave(filename = "R figures/Integration and annotation/Dimplot-Igfbp2 after integration.png",width = 4,height = 4,dpi = 150)
+
+FeatureDimPlot(integrated.xDbit,features = "Spp1",palette = "Greens",
+            theme_use = "theme_blank",
+            raster = F)#Cholangiocytes
+ggsave(filename = "H:/Celia group/xDbit(s4) project(renew)/R figures/Integration and annotation/Dimplot-Spp1 after integration.pdf",width = 4,height = 4,dpi = 150)
+ggsave(filename = "H:/Celia group/xDbit(s4) project(renew)/R figures/Integration and annotation/Dimplot-Spp1 after integration.png",width = 4,height = 4,dpi = 150)
+
+FeatureDimPlot(integrated.xDbit,features = "Glul",palette = "RdYlBu",
+            theme_use = "theme_blank",
+            raster = F)#Hep_CV
+ggsave(filename = "H:/Celia group/xDbit(s4) project(renew)/R figures/Integration and annotation/Dimplot-Glul after integration.pdf",width = 4,height = 4,dpi = 150)
+ggsave(filename = "R figures/Integration and annotation/Dimplot-Glul after integration.png",width = 4,height = 4,dpi = 150)
+
+FeatureDimPlot(integrated.xDbit,features = "Lyve1",palette = "BrBG",
+            theme_use = "theme_blank",
+            raster = F)#Hep_Mid
+ggsave(filename = "H:/Celia group/xDbit(s4) project(renew)/R figures/Integration and annotation/Dimplot-Lyve1 after integration.pdf",width = 4,height = 4,dpi = 150)
+ggsave(filename = "R figures/Integration and annotation/Dimplot-Lyve1 after integration.png",width = 4,height = 4,dpi = 150)
+
+FeatureDimPlot(integrated.xDbit,features = "Krt19",palette = "PiYG",
+            theme_use = "theme_blank",
+            raster = F)#Hep_PV
+ggsave(filename = "H:/Celia group/xDbit(s4) project(renew)/R figures/Integration and annotation/Dimplot-Krt19 after integration.pdf",width = 4,height = 4,dpi = 150)
+ggsave(filename = "H:/Celia group/xDbit(s4) project(renew)/R figures/Integration and annotation/Dimplot-Krt19 after integration.png",width = 4,height = 4,dpi = 150)
+
+FeatureDimPlot(integrated.xDbit,features = "Hamp",palette = "BrBG",
+            theme_use = "theme_blank",
+            raster = F)#Hep_PV
+ggsave(filename = "H:/Celia group/xDbit(s4) project(renew)/R figures/Integration and annotation/Dimplot-Hamp after integration.pdf",width = 4,height = 4,dpi = 150)
+ggsave(filename = "H:/Celia group/xDbit(s4) project(renew)/R figures/Integration and annotation/Dimplot-Hamp after integration.png",width = 4,height = 4,dpi = 150)
+```
+
+```{r,check the marker(harmony),include=FALSE}
+FeatureDimPlot(integrated.xDbit,features = "Cyp2e1",palette = "RdYlBu",
+            theme_use = "theme_blank",reduction = "harmony",
+            raster = F)#Hep_CV
+
+ggsave(filename = "H:/Celia group/xDbit(s4) project(renew)/R figures/Integration and annotation/Dimplot-Cyp2e1 after integration(harmony).pdf",width = 4,height = 4,dpi = 150)
+ggsave(filename = "H:/Celia group/xDbit(s4) project(renew)/R figures/Integration and annotation/Dimplot-Cyp2e1 after integration(harmony).png",width = 4,height = 4,dpi = 150)
+
+FeatureDimPlot(integrated.xDbit,features = "Cyp2f2",palette = "PiYG",
+            theme_use = "theme_blank",reduction = "harmony",
+            raster = F)#Hep_PV
+ggsave(filename = "H:/Celia group/xDbit(s4) project(renew)/R figures/Integration and annotation/Dimplot-Cyp2f2 after integration(harmony).pdf",width = 4,height = 4,dpi = 150)
+ggsave(filename = "H:/Celia group/xDbit(s4) project(renew)/R figures/Integration and annotation/Dimplot-Cyp2f2 after integration(harmony).png",width = 4,height = 4,dpi = 150)
+
+FeatureDimPlot(integrated.xDbit,features = "Igfbp2",palette = "BrBG",
+            theme_use = "theme_blank",reduction = "harmony",
+            raster = F)#Hep_Mid
+ggsave(filename = "H:/Celia group/xDbit(s4) project(renew)/R figures/Integration and annotation/Dimplot-Igfbp2 after integration(harmony).pdf",width = 4,height = 4,dpi = 150)
+ggsave(filename = "R figures/Integration and annotation/Dimplot-Igfbp2 after integration(harmony).png",width = 4,height = 4,dpi = 150)
+
+FeatureDimPlot(integrated.xDbit,features = "Spp1",palette = "Greens",
+            theme_use = "theme_blank",reduction = "harmony",
+            raster = F)#Cholangiocytes
+ggsave(filename = "H:/Celia group/xDbit(s4) project(renew)/R figures/Integration and annotation/Dimplot-Spp1 after integration(harmony).pdf",width = 4,height = 4,dpi = 150)
+ggsave(filename = "H:/Celia group/xDbit(s4) project(renew)/R figures/Integration and annotation/Dimplot-Spp1 after integration(harmony).png",width = 4,height = 4,dpi = 150)
+
+FeatureDimPlot(integrated.xDbit,features = "Glul",palette = "RdYlBu",
+            theme_use = "theme_blank",reduction = "harmony",
+            raster = F)#Hep_CV
+ggsave(filename = "H:/Celia group/xDbit(s4) project(renew)/R figures/Integration and annotation/Dimplot-Glul after integration(harmony).pdf",width = 4,height = 4,dpi = 150)
+ggsave(filename = "R figures/Integration and annotation/Dimplot-Glul after integration(harmony).png",width = 4,height = 4,dpi = 150)
+
+FeatureDimPlot(integrated.xDbit,features = "Lyve1",palette = "BrBG",
+            theme_use = "theme_blank",
+            raster = F)#Hep_Mid
+ggsave(filename = "H:/Celia group/xDbit(s4) project(renew)/R figures/Integration and annotation/Dimplot-Lyve1 after integration(harmony).pdf",width = 4,height = 4,dpi = 150)
+ggsave(filename = "R figures/Integration and annotation/Dimplot-Lyve1 after integration(harmony).png",width = 4,height = 4,dpi = 150)
+
+FeatureDimPlot(integrated.xDbit,features = "Krt19",palette = "PiYG",
+            theme_use = "theme_blank",reduction = "harmony",
+            raster = F)#Hep_PV
+ggsave(filename = "H:/Celia group/xDbit(s4) project(renew)/R figures/Integration and annotation/Dimplot-Krt19 after integration(harmony).pdf",width = 4,height = 4,dpi = 150)
+ggsave(filename = "H:/Celia group/xDbit(s4) project(renew)/R figures/Integration and annotation/Dimplot-Krt19 after integration(harmony).png",width = 4,height = 4,dpi = 150)
+
+FeatureDimPlot(integrated.xDbit,features = "Hamp",palette = "BrBG",
+            theme_use = "theme_blank",reduction = "harmony",
+            raster = F)#Hep_PV
+ggsave(filename = "H:/Celia group/xDbit(s4) project(renew)/R figures/Integration and annotation/Dimplot-Hamp after integration(harmony).pdf",width = 4,height = 4,dpi = 150)
+ggsave(filename = "H:/Celia group/xDbit(s4) project(renew)/R figures/Integration and annotation/Dimplot-Hamp after integration(harmony).png",width = 4,height = 4,dpi = 150)
+```
+
+```{r,cis ref data,include=FALSE}
+ load("H:/Celia group/xDbit(s4) project(renew)/mouse liver altas.RData")
+
+
+ref.data<-SetIdent(ref.data,value="zonationGroup")
+ref.data<-subset(ref.data,idents=c(  "Central", "Mid" ,"Periportal","Portal" ))
+
+ref.data <- NormalizeData(ref.data)
+ref.data <- FindVariableFeatures(ref.data)
+ref.data <- ScaleData(ref.data)
+ref.data <- RunPCA(ref.data)
+ref.data <- FindNeighbors(ref.data, dims = 1:30)
+ref.data <- FindClusters(ref.data)
+
+CellDimPlot(ref.data,group.by = "zonationGroup")
+ggsave(filename = "H:/Celia group/xDbit(s4) project(renew)/R figures/Integration and annotation/Dimplot for ref data.pdf",width = 4,height = 4,dpi = 150)
+ggsave(filename = "H:/Celia group/xDbit(s4) project(renew)/R figures/Integration and annotation/Dimplot for ref data.png",width = 4,height = 4,dpi = 150)
+
+FeatureDimPlot(ref.data,features = c("Cyp2f2","Cyp2e1","Glul","Hamp"),ncol = 2)
+
+ggsave(filename = "H:/Celia group/xDbit(s4) project(renew)/R figures/Integration and annotation/marker gene Dimplot for ref data.pdf",width = 10,height = 10,dpi = 150)
+ggsave(filename = "H:/Celia group/xDbit(s4) project(renew)/R figures/Integration and annotation/marker gene Dimplot for ref data.png",width = 10,height = 10,dpi = 150)
+```
+
+### label transfer
+
+
+```{r,pp for query,include=FALSE}
+DefaultAssay(integrated.xDbit)<-"RNA"
+
+db.list<-SplitObject(integrated.xDbit,split.by = "id")
+```
+
+
+```{r,label transfer,include=FALSE}
+prediction.list<-list()
+
+for (i in seq_along(db.list)) {
+  
+  obj<-db.list[[i]]
+  
+  obj <- NormalizeData(obj)
+  obj<- FindVariableFeatures(obj)
+  obj <- ScaleData(obj)
+  obj <- RunPCA(obj)
+  obj <- FindNeighbors(obj, dims = 1:30)
+  obj <- FindClusters(obj)
+  
+  
+  db.anchors <- FindTransferAnchors(reference = ref.data, 
+                                  query = obj, 
+                                  reference.assay ="RNA",
+                                  query.assay = "RNA",
+                                  dims = 1:30,
+                                  reference.reduction = "pca")
+  
+  
+  predictions <- TransferData(anchorset =db.anchors, refdata = ref.data$zonationGroup, dims = 1:30,k.weight =20)
+  
+  prediction.list[[i]]<-predictions 
+  
+  
+  obj<- AddMetaData(obj, metadata = predictions)
+  
+  db.list[[i]]<- obj
+  
+  print(i)
+  
+  rm(db.anchors,obj, predictions)
+  
+}
+
+
+
+prediction.df<-do.call(rbind,prediction.list)
+
+integrated.xDbit<- AddMetaData(integrated.xDbit, metadata = prediction.df)
+
+integrated.xDbit$predicted.id<-factor(integrated.xDbit$predicted.id,
+                                      levels = c("Periportal","Portal" ,
+                                                 "Central", "Mid" ))
+
+db.list<-SplitObject(integrated.xDbit,split.by = "id")
+
+
+pdf(file =  "H:/Celia group/xDbit(s4) project(renew)/R figures/Integration and annotation/transfer res.pdf",width = 15,height = 5)
+
+for (i in seq_along(db.list)) {
+  
+ p1<- CellDimPlot(db.list[[i]],group.by = "predicted.id",pt.size = 1,
+                    palette = "Set1", reduction = "Spatial")
+ 
+ p2<- CellDimPlot(db.list[[i]],group.by = "predicted.id",pt.size = 1,
+                    palette = "Set1", reduction = "harmony")
+ 
+  p3<- CellDimPlot(db.list[[i]],group.by = "predicted.id",pt.size = 1,
+                    palette = "Set1", reduction = "umap")
+ 
+ p4<-p1+p2+p3
+ 
+ print(p4)
+  
+}
+
+dev.off()
+```
+
+### fine tune label transfer
+
+```{r, check the marker gene,include=FALSE}
+cv.marker<-c("Glul","Lect2","Cyp2e1","Psmd5","Tbx3",
+             "Prdx1","Cyp2c55","Pex2","Cyp2c70","Cyp2c37",
+             "Cyp2c29","Cyp2c50","Ghr","Gck","Mlxipl",
+             "Abcd3","Cyp2c67","Cyp2d9","Fabp1","Cyp2a5",
+             "Cyp4a14","Acsl1","Irs1","Aldh4a1",
+              "Usp2", "Slco1b2")
+
+names(cv.marker)<-rep("CV.marker",length(cv.marker))
+
+mid.marker<-c("Hamp", "Il1r1", "Cebpb",
+              "Thrb", "Ttr", "Apoa1",
+             "Scd1", "Ces1f", "Slc38a4")
+names(mid.marker)<-rep("Mid.marker",length(mid.marker))
+
+pv.marker<-c("Cyp2f2", "Arg1", "Apoc3","Fga", "Hp",
+              "Ass1", "Acly", "Gls2","Atp5k", "Atp5e", "Atp5g3",
+             "Mat1a", "Slc25a25","Elovl5", "Acaca",
+             "Lpin1", "Adipor2", "Sdhd","Uqcrh", 
+             "Idh3b","Pck1", "Insig2")
+
+names(pv.marker)<-rep("PV.marker",length(pv.marker))
+
+marker<-c(cv.marker,mid.marker,pv.marker)
+
+marker.list<-list(PV=pv.marker,
+                  Mid=mid.marker,
+                  CV=cv.marker)
+
+
+
+integrated.xDbit<-AddModuleScore_UCell(integrated.xDbit,features = marker.list,assay = "RNA")
+
+```
+
+```{r,include=FALSE}
+integrated.xDbit = FindNeighbors(integrated.xDbit, dims = 1:30,
+                          reduction ="harmony")
+integrated.xDbit = FindClusters(integrated.xDbit, resolution = 1)
+
+colnames(integrated.xDbit@meta.data)[33]<-"PV.score"
+colnames(integrated.xDbit@meta.data)[34]<-"Mid.score"
+colnames(integrated.xDbit@meta.data)[35]<-"CV.score"
+colnames(integrated.xDbit@meta.data)[35]<-"harmony.snn.1"
+```
+
+```{r,vis,include=FALSE}
+CellDimPlot(integrated.xDbit,group.by = "harmony.snn.1",label = T,
+            reduction = "harmony")
+ggsave(filename = "H:/Celia group/xDbit(s4) project(renew)/R figures/Integration and annotation/Dimplot for clusters(harmony).pdf",dpi = 150)
+ggsave(filename = "H:/Celia group/xDbit(s4) project(renew)/R figures/Integration and annotation/Dimplot for clusters(harmony).png",dpi = 150)
+
+CellDimPlot(integrated.xDbit,group.by = "harmony.snn.1",label = T,
+            reduction = "umap")
+ggsave(filename = "H:/Celia group/xDbit(s4) project(renew)/R figures/Integration and annotation/Dimplot for clusters(umap).pdf",dpi = 150)
+ggsave(filename = "H:/Celia group/xDbit(s4) project(renew)/R figures/Integration and annotation/Dimplot for clusters(umap).png",dpi = 150)
+
+CellDimPlot(integrated.xDbit,group.by = "predicted.id",label = T,
+            reduction = "harmony")
+ggsave(filename = "H:/Celia group/xDbit(s4) project(renew)/R figures/Integration and annotation/Dimplot for transfer label(harmony).pdf",dpi = 150)
+ggsave(filename = "H:/Celia group/xDbit(s4) project(renew)/R figures/Integration and annotation/Dimplot for transfer label(harmony).png",dpi = 150)
+
+CellDimPlot(integrated.xDbit,group.by = "predicted.id",label = T,
+            reduction = "umap")
+ggsave(filename = "H:/Celia group/xDbit(s4) project(renew)/R figures/Integration and annotation/Dimplot for transfer label(umap).pdf",dpi = 150)
+ggsave(filename = "H:/Celia group/xDbit(s4) project(renew)/R figures/Integration and annotation/Dimplot for transfer label(umap).png",dpi = 150)
+
+
+ht1 <- GroupHeatmap(integrated.xDbit,
+  features = c("PV.score","Mid.score", "CV.score"), 
+  fill.by = "group",fill_palette = "Set2",
+  group.by = "harmony.snn.1",
+  add_violin = TRUE,
+  cluster_rows = F,show_column_names = T,
+  cluster_columns = T,
+  nlabel = 0, show_row_names = TRUE
+)$plot
+
+pdf("H:/Celia group/xDbit(s4) project(renew)/R figures/Integration and annotation/marker score heatmap for harmony cluster.pdf",width = 10,height = 6)
+print(ht1)
+dev.off()
+
+ht2 <- GroupHeatmap(integrated.xDbit,
+  features =marker, feature_split =  names(marker),
+  fill.by = "feature",fill_palette = "Set2",
+  group.by = "harmony.snn.1",
+  add_violin = TRUE, 
+  cluster_rows = F,
+  cluster_columns = T,show_column_names = T,
+  nlabel = 0, show_row_names = TRUE,
+  height=14,width = 7
+)$plot
+
+
+pdf(file =  "H:/Celia group/xDbit(s4) project(renew)/R figures/Integration and annotation/marker heatmap for harmony cluster.pdf",width = 12,height = 20)
+print(ht2)
+dev.off()
+```
+
+```{r,include=FALSE}
+DimPlot(integrated.xDbit,group.by = "harmony.snn.1",
+        split.by = "id",ncol = 3,
+        cols =brewer.pal(11,"Spectral"),
+        label = T,pt.size = 0.5)
+ggsave(filename = "H:/Celia group/xDbit(s4) project(renew)/R figures/Integration and annotation/Dimplot for clusters(umap) by slice.pdf",dpi = 150,height = 15,width = 8)
+ggsave(filename = "H:/Celia group/xDbit(s4) project(renew)/R figures/Integration and annotation/Dimplot for clusters(umap) by slice.png",dpi = 150,height = 15,width = 8)
+
+DimPlot(integrated.xDbit,group.by = "harmony.snn.1",
+        split.by = "id",ncol = 3,reduction = "harmony",
+        cols =brewer.pal(11,"Spectral"),
+        label = T,pt.size = 0.5)
+ggsave(filename = "H:/Celia group/xDbit(s4) project(renew)/R figures/Integration and annotation/Dimplot for clusters(harmony) by slice.pdf",dpi = 150,height = 15,width = 8)
+ggsave(filename = "H:/Celia group/xDbit(s4) project(renew)/R figures/Integration and annotation/Dimplot for clusters(harmony) by slice.png",dpi = 150,height = 15,width = 8)
+```
+
+
+
+```{r,assign the zonation,include=F}
+integrated.xDbit<-SetIdent(integrated.xDbit,value = "harmony.snn.1")
+
+integrated.xDbit <- RenameIdents(object = integrated.xDbit,
+                              "0" = "PV")
+integrated.xDbit <- RenameIdents(object = integrated.xDbit, 
+                              "1" = "Mid")
+integrated.xDbit <- RenameIdents(object = integrated.xDbit,
+                              "2" = "Mid")
+integrated.xDbit <- RenameIdents(object = integrated.xDbit,
+                              "3" = "PV")
+integrated.xDbit <- RenameIdents(object = integrated.xDbit,
+                              "4" = "CV")
+integrated.xDbit <- RenameIdents(object = integrated.xDbit,
+                              "5" = "Mid")
+integrated.xDbit <- RenameIdents(object = integrated.xDbit,
+                              "6" = "CV")
+integrated.xDbit <- RenameIdents(object = integrated.xDbit,
+                              "7" = "PV")
+integrated.xDbit <- RenameIdents(object = integrated.xDbit,
+                              "8" = "CV")
+integrated.xDbit <- RenameIdents(object = integrated.xDbit,
+                              "9" = "PV")
+integrated.xDbit <- RenameIdents(object = integrated.xDbit,
+                              "10" = "Mid")
+
+
+integrated.xDbit$liver.zonation<-integrated.xDbit@active.ident
+
+integrated.xDbit$liver.zonation<-factor(integrated.xDbit$liver.zonation,levels = c("PV","Mid","CV"))
+
+save(integrated.xDbit,file = "filter data.Rdata")
+```
+```{r,include=FALSE}
+CellDimPlot(integrated.xDbit,group.by = "liver.zonation",reduction = "umap", palette = "Set2")
+
+ggsave(filename = "R figures/Integration and annotation/Dimplot-liver zonation after integration(umap).pdf",width =4,height = 4,dpi = 150)
+ggsave(filename = "R figures/Integration and annotation/Dimplot-liver zonation after integration(umap).png",width = 4,height = 4,dpi = 150)
+
+CellDimPlot(integrated.xDbit,group.by = "liver.zonation",reduction = "harmony", palette = "Set2")
+
+ggsave(filename = "R figures/Integration and annotation/Dimplot-liver zonation after integration(harmony).pdf",width =4,height = 4,dpi = 150)
+ggsave(filename = "R figures/Integration and annotation/Dimplot-liver zonation after integration(harmony).png",width = 4,height = 4,dpi = 150)
+
+
+ht1 <- FeatureStatPlot(integrated.xDbit,
+  stat.by = c("PV.score","Mid.score", "CV.score"),
+  legend.position = "top", legend.direction = "horizontal",
+  group.by = "liver.zonation", bg.by = "liver.zonation", stack = TRUE,
+  palette = "Set2",add_box = T,add_trend = F
+)
+
+pdf("H:/Celia group/xDbit(s4) project(renew)/R figures/Integration and annotation/marker score heatmap for zonation.pdf",width = 6,height = 8)
+print(ht1)
+dev.off()
+
+ht2 <-FeatureStatPlot(integrated.xDbit,
+  stat.by = marker,
+  legend.position = "top", legend.direction = "horizontal",
+  group.by = "liver.zonation", bg.by = "liver.zonation", stack = TRUE,
+  palette = "Set2",add_box = T
+)
+
+
+pdf(file =  "H:/Celia group/xDbit(s4) project(renew)/R figures/Integration and annotation/marker heatmap for zonation.pdf",width = 4,height =20)
+print(ht2)
+dev.off()
+```
+
+
+```{r,include=FALSE}
+
+ht2 <-FeatureStatPlot(integrated.xDbit,
+  stat.by = pv.marker,
+  legend.position = "top", legend.direction = "horizontal",
+  group.by = "liver.zonation", bg.by = "liver.zonation", stack = T,
+  palette = "Set2",add_box = T,subtitle = "PV marker"
+)
+
+
+
+pdf(file =  "H:/Celia group/xDbit(s4) project(renew)/R figures/Integration and annotation/PV markerheatmap for zonation.pdf",width = 4,height = 25)
+print(ht2)
+dev.off()
+
+ht2 <-FeatureStatPlot(integrated.xDbit,
+  stat.by = cv.marker,
+  legend.position = "top", legend.direction = "horizontal",
+  group.by = "liver.zonation", bg.by = "liver.zonation", stack = T,
+  palette = "Set2",add_box = T,subtitle = "CV marker"
+)
+
+
+
+pdf(file =  "H:/Celia group/xDbit(s4) project(renew)/R figures/Integration and annotation/cv markerheatmap for zonation.pdf",width = 4,height = 26)
+print(ht2)
+dev.off()
+
+
+ht2 <-FeatureStatPlot(integrated.xDbit,
+  stat.by = mid.marker,
+  legend.position = "top", legend.direction = "horizontal",
+  group.by = "liver.zonation", bg.by = "liver.zonation", stack = T,
+  palette = "Set2",add_box = T,subtitle = "Mid marker"
+)
+
+
+
+pdf(file =  "H:/Celia group/xDbit(s4) project(renew)/R figures/Integration and annotation/mid markerheatmap for zonation.pdf",width = 4,height =10)
+print(ht2)
+dev.off()
+```
+
+
+## compare the ground truth and annotated zonation
+
+```{r,include=FALSE}
+integrated.xDbit$liver.zonation<-factor(integrated.xDbit$liver.zonation,
+                                        levels = c("PV","Mid","CV"))
+
+save(integrated.xDbit,file = "filter data.Rdata")
+
+slice.list<-SplitObject(integrated.xDbit, split.by = "id")
+```
+
+```{r,Gene Spatial plot,include=FALSE}
+
+col<-brewer.pal(12,"Paired")
+col<-col[c(1,11,5)]
+for (i in 1:length(slice.list)) {
+  
+  tmp<-slice.list[[i]]
+  
+  CellDimPlot(srt =tmp ,group.by = "liver.zonation",
+              reduction = "spatial",
+              bg_color = "black",
+              pt.size = 2.5,
+             palcolor = col,
+              theme_use = "theme_blank")+
+    ggtitle(names(slice.list[i]))+
+    theme(plot.background = element_rect(fill = "black", color = "black"),
+          panel.background = element_rect(fill = "black", color = "black"),
+          plot.margin = unit(c(0.5,0.5,0.5,0.5), "lines"), 
+          text = element_text(color = "white"), 
+          axis.title = element_text(color = "white"), 
+          axis.text = element_text(color = "white"),
+          legend.title = element_text(color = "white"), 
+          legend.text = element_text(color = "white"), 
+          plot.title = element_text(color = "white", hjust = 0.5))
+  
+  ggsave(filename = paste0("R figures/zonation validation/SpatialPlot-",
+                           names(slice.list[i]),
+                           ".pdf"),dpi = 150)
+  
+  ggsave(filename = paste0("R figures/zonation validation/SpatialPlot-",
+                           names(slice.list[i]),
+                           ".png"),dpi = 150)
+  rm(tmp)
+  
+}
+
+for (i in 1:length(slice.list)) {
+  
+  tmp<-slice.list[[i]]
+
+col<-brewer.pal(12,"Paired")
+col<-col[c(1,11,5)]
+p1<-CellDimPlot(srt =tmp ,group.by = "liver.zonation",
+              reduction = "spatial",
+              bg_color = "black",
+              pt.size = 2.5,
+             palcolor = col,
+              theme_use = "theme_blank")+
+    ggtitle(names(slice.list[i]))+
+    theme(plot.background = element_rect(fill = "black", color = "black"),
+          panel.background = element_rect(fill = "black", color = "black"),
+          plot.margin = unit(c(1,1,1,1), "lines"), 
+          text = element_text(color = "white"), 
+          axis.title = element_text(color = "white"), 
+          axis.text = element_text(color = "white"),
+          legend.title = element_text(color = "white"), 
+          legend.text = element_text(color = "white"), 
+          plot.title = element_text(color = "white", hjust = 0.5)) +
+    theme(aspect.ratio = 1)
+
+
+ p2<- FeatureDimPlot(tmp,features = "Cyp2e1",palette = "viridis",
+                     slot = "data",
+                  
+                     lower_quantile = 0,
+  upper_quantile = 0.75,
+                    
+            theme_use = "theme_blank",reduction = "spatial",
+            pt.size = 2.5,
+            raster = F)+
+    ggtitle("Cyp2e1")+
+    theme(plot.background = element_rect(fill = "black", color = "black"),
+          panel.background = element_rect(fill = "black", color = "black"),
+          plot.margin = unit(c(1,1,1,1), "lines"), 
+          text = element_text(color = "white"), 
+          axis.title = element_text(color = "white"), 
+          axis.text = element_text(color = "white"),
+          legend.title = element_text(color = "white"), 
+          legend.text = element_text(color = "white"), 
+          plot.title = element_text(color = "white", hjust = 0.5,size = 12))+
+    theme(aspect.ratio = 1)
+ 
+  p3<- FeatureDimPlot(tmp,features = "Hamp",palette = "viridis",
+                       slot = "data",
+                     
+                      lower_quantile = 0,
+  upper_quantile = 0.75,
+                   
+                     
+            theme_use = "theme_blank",reduction = "spatial",
+            pt.size = 2.5,
+            raster = F)+
+    ggtitle("Hamp")+
+    theme(plot.background = element_rect(fill = "black", color = "black"),
+          panel.background = element_rect(fill = "black", color = "black"),
+          plot.margin = unit(c(1,1,1,1), "lines"), 
+          text = element_text(color = "white"), 
+          axis.title = element_text(color = "white"), 
+          axis.text = element_text(color = "white"),
+          legend.title = element_text(color = "white"), 
+          legend.text = element_text(color = "white"), 
+          plot.title = element_text(color = "white", hjust = 0.5,size = 12))+
+    theme(plot.margin = margin(5.5, 5.5, 5.5, 5.5, "mm"))
+  
+    p4<- FeatureDimPlot(tmp,features = "Cyp2f2",palette = "viridis",
+            theme_use = "theme_blank",reduction = "spatial",
+             slot = "data",
+           
+            lower_quantile = 0,
+  upper_quantile = 0.75,
+            pt.size = 2.5,
+            raster = F)+
+    ggtitle("Cyp2f2")+
+    theme(plot.background = element_rect(fill = "black", color = "black"),
+          panel.background = element_rect(fill = "black", color = "black"),
+          plot.margin = unit(c(0.2,1,1,1), "lines"), 
+          text = element_text(color = "white"), 
+          axis.title = element_text(color = "white"), 
+          axis.text = element_text(color = "white"),
+          legend.title = element_text(color = "white"), 
+          legend.text = element_text(color = "white"), 
+          plot.title = element_text(color = "white", hjust = 0.5,size = 12))+
+    theme(plot.margin = margin(5.5, 5.5, 5.5, 5.5, "mm"))
+
+
+    
+ggsave(filename = paste0("R figures/zonation validation/SpatialGenePlot-",
+                           names(slice.list[i]),
+                           ".png"), 
+       ggarrange(p1, p2, p3, p4, ncol = 2, nrow = 2), 
+       bg = "black", width = 12, height = 12,dpi = 150)
+
+ggsave(filename = paste0("R figures/zonation validation/SpatialGenePlot-",
+                           names(slice.list[i]),
+                           ".pdf"), 
+       ggarrange(p1, p2, p3, p4, ncol = 2, nrow = 2), 
+       bg = "black", width = 12, height = 12,dpi = 150)
+  rm(tmp)
+  
+}
+
+col<-brewer.pal(12,"Paired")
+col<-col[c(1,11,5)]
+DimPlot(integrated.xDbit,group.by = "liver.zonation",
+        split.by = "id",ncol = 3,
+        cols =col,
+        label = T,pt.size = 0.5)
+ggsave(filename = "H:/Celia group/xDbit(s4) project(renew)/R figures/Integration and annotation/Dimplot for zonation(umap) by slice.pdf",dpi = 150,height = 15,width = 8)
+ggsave(filename = "H:/Celia group/xDbit(s4) project(renew)/R figures/Integration and annotation/Dimplot for zonation(umap) by slice.png",dpi = 150,height = 15,width = 8)
+
+DimPlot(integrated.xDbit,group.by = "liver.zonation",
+        split.by = "id",ncol = 3,reduction = "harmony",
+        cols =col,
+        label = T,pt.size = 0.5)
+ggsave(filename = "H:/Celia group/xDbit(s4) project(renew)/R figures/Integration and annotation/Dimplot for zonation(harmony) by slice.pdf",dpi = 150,height = 15,width = 8)
+ggsave(filename = "H:/Celia group/xDbit(s4) project(renew)/R figures/Integration and annotation/Dimplot for zonation(harmony) by slice.png",dpi = 150,height = 15,width = 8)
+```
+
+```{r,include=FALSE}
+pdf(file ="R figures/zonation validation/Spatial nCount per slice.pdf", 
+    width = 12, height = 6)
+for (i in 1:length(slice.list)) {
+  
+  tmp<-slice.list[[i]]
+
+col<-brewer.pal(12,"Paired")
+col<-col[c(1,11,5)]
+p1<-CellDimPlot(srt =tmp ,group.by = "liver.zonation",
+              reduction = "spatial",
+              bg_color = "black",
+              pt.size = 2.5,
+             palcolor = col,
+              theme_use = "theme_blank")+
+    ggtitle(names(slice.list[i]))+
+    theme(plot.background = element_rect(fill = "black", color = "black"),
+          panel.background = element_rect(fill = "black", color = "black"),
+          plot.margin = unit(c(1,1,1,1), "lines"), 
+          text = element_text(color = "white"), 
+          axis.title = element_text(color = "white"), 
+          axis.text = element_text(color = "white"),
+          legend.title = element_text(color = "white"), 
+          legend.text = element_text(color = "white"), 
+          plot.title = element_text(color = "white", hjust = 0.5)) +
+    theme(aspect.ratio = 1)
+
+
+ p2<- FeatureDimPlot(tmp,features = "nCount",palette = "viridis",
+            theme_use = "theme_blank",reduction = "spatial",
+            pt.size = 2.5,
+            raster = F)+
+    ggtitle("nCount")+
+    theme(plot.background = element_rect(fill = "black", color = "black"),
+          panel.background = element_rect(fill = "black", color = "black"),
+          plot.margin = unit(c(1,1,1,1), "lines"), 
+          text = element_text(color = "white"), 
+          axis.title = element_text(color = "white"), 
+          axis.text = element_text(color = "white"),
+          legend.title = element_text(color = "white"), 
+          legend.text = element_text(color = "white"), 
+          plot.title = element_text(color = "white", hjust = 0.5,size = 12))+
+    theme(aspect.ratio = 1)
+ 
+
+    
+ggsave(filename = paste0("R figures/zonation validation/SpatialGenePlot-nCount-",
+                           names(slice.list[i]),
+                           ".png"), 
+       ggarrange(p1, p2, ncol = 2, nrow = 1), 
+       bg = "black", width = 12, height = 6,dpi = 150)
+
+ggsave(filename = paste0("R figures/zonation validation/SpatialGenePlot-",
+                           names(slice.list[i]),
+                           ".pdf"), 
+       ggarrange(p1, p2,  ncol = 2, nrow = 1), 
+       bg = "black", width = 12, height = 6,dpi = 150)
+p<-p1+p2
+
+print(p)
+
+  rm(tmp)
+  
+}
+dev.off()
+```
+
+
+
+
+## DEG
+
+```{r,include=FALSE}
+#DEG per zonation
+
+integrated.xDbit <- RunDEtest(srt =integrated.xDbit, group_by ="liver.zonation", fc.threshold = 1, only.pos = FALSE,test.use = "MAST",latent.vars = "mouse_id")
+
+# pathway enrichment
+integrated.xDbit<- RunEnrichment(
+  srt = integrated.xDbit, group_by = "liver.zonation", db = "GO_BP", species = "Mus_musculus",test.use = "MAST",GO_simplify = T,
+  DE_threshold = "avg_log2FC > 0.5 & p_val_adj < 0.05"
+)
+
+# GSEA
+integrated.xDbit <- RunGSEA(
+  srt = integrated.xDbit, group_by = "liver.zonation", db = "GO_BP", species = "Mus_musculus",
+  DE_threshold =  "avg_log2FC > 0.5 & p_val_adj < 0.05",test.use = "MAST",GO_simplify = T,
+)
+
+integrated.xDbit<- AnnotateFeatures(integrated.xDbit, species = "Mus_musculus", db = c("TF", "CSPA"))
+
+save(integrated.xDbit,file = "filter data.Rdata")
+```
+
+```{r,include=FALSE}
+DEGs <- integrated.xDbit@tools$DEtest_liver.zonation$AllMarkers_MAST
+DEGs <- DEGs[with(DEGs, avg_log2FC > 1 & p_val_adj < 0.05), ]
+
+
+ht <- GroupHeatmap(
+  srt = integrated.xDbit, 
+  group.by = "liver.zonation", features = DEGs$gene, feature_split = DEGs$group1,
+  feature_annotation = c("TF", "CSPA"),
+  feature_annotation_palcolor = list(c("gold", "steelblue"), c("forestgreen")),
+  heatmap_palette = "RdYlBu",nlabel = 60,lib_normalize = T,libsize = 1,
+  height = 8, width = 4
+)
+
+pdf(file ="R figures/Integration and annotation/heatmap for zonation(group).pdf",height = 10,width = 10 )
+
+print(ht$plot)
+
+dev.off()
+
+ht <- FeatureHeatmap(
+  srt = integrated.xDbit, 
+  group.by = "liver.zonation", features = DEGs$gene, feature_split = DEGs$group1,
+  feature_annotation = c("TF", "CSPA"),
+  feature_annotation_palcolor = list(c("gold", "steelblue"), c("forestgreen")),
+  heatmap_palette = "RdYlBu",nlabel = 60,lib_normalize = T,libsize = 1,
+  height = 8, width = 4
+)
+
+pdf(file ="R figures/Integration and annotation/heatmap for zonation(feature).pdf",height = 10,width = 10 )
+
+print(ht$plot)
+
+dev.off()
+
+
+ht <- GroupHeatmap(
+  srt = integrated.xDbit, 
+  group.by = "liver.zonation", features = DEGs$gene, feature_split = DEGs$group1,
+  feature_annotation = c("TF", "CSPA"),split.by = "age",
+  feature_annotation_palcolor = list(c("gold", "steelblue"), c("forestgreen")),
+  heatmap_palette = "RdYlBu",nlabel = 60,lib_normalize = T,libsize = 1,
+  height = 8, width = 4
+)
+
+pdf(file ="R figures/Integration and annotation/heatmap for zonation(group)  splited by aging.pdf",height = 10,width = 10 )
+
+print(ht$plot)
+
+dev.off()
+
+ht <- FeatureHeatmap(
+  srt = integrated.xDbit, 
+  group.by = "liver.zonation", features = DEGs$gene, feature_split = DEGs$group1,
+  feature_annotation = c("TF", "CSPA"),split.by = "age",
+  feature_annotation_palcolor = list(c("gold", "steelblue"), c("forestgreen")),
+  heatmap_palette = "RdYlBu",nlabel = 60,lib_normalize = T,libsize = 1,
+  height = 8, width = 4
+)
+
+pdf(file ="R figures/Integration and annotation/heatmap for zonation(feature) splited by aging.pdf",height = 10,width = 10 )
+
+print(ht$plot)
+
+dev.off()
+
+```
+
+```{r,include=FALSE}
+pdf(file = "R figures/Integration and annotation/Enrichemnt plot (PV).pdf",width = 10,height = 8)
+EnrichmentPlot(
+  srt =integrated.xDbit, group_by ="liver.zonation", group_use = "PV",
+  plot_type = "network",test.use = "MAST"
+)
+dev.off()
+
+pdf(file = "R figures/Integration and annotation/Enrichemnt plot (CV).pdf",width = 10,height = 8)
+EnrichmentPlot(
+  srt =integrated.xDbit, group_by ="liver.zonation", group_use = "CV",
+  plot_type = "network",test.use = "MAST"
+)
+dev.off()
+
+pdf(file = "R figures/Integration and annotation/Enrichemnt plot (Mid).pdf",width = 10,height = 8)
+EnrichmentPlot(
+  srt =integrated.xDbit, group_by ="liver.zonation", group_use = "Mid",
+  plot_type = "network",test.use = "MAST"
+)
+dev.off()
+
+pdf(file = "R figures/Integration and annotation/Enrichemnt plot (comparison).pdf",width = 10,height = 8)
+EnrichmentPlot(
+  srt =integrated.xDbit, group_by ="liver.zonation", 
+  plot_type = "comparison",test.use = "MAST"
+)
+dev.off()
+```
+
+# Construct PV-CV axis(Trajectory) 
+
+```{r,load the data}
+load("H:/Celia group/xDbit project/filter data.RData")
+
+DefaultAssay(integrated.xDbit)<-"RNA"
+
+slice.list<-SplitObject(integrated.xDbit, split.by = "id")
+```
+
+```{r,write a normalization function}
+normalize.trajectory <- function(x) {
+  # Normalize x to [0, 1]
+  normalized_x = (x - min(x)) / (max(x) - min(x))
+  
+  # Scale to [-1, 1]
+  scaled_x = normalized_x * 2 - 1
+  
+  return(scaled_x)
+}
+```
+
+
+```{r,run psupertime,include=FALSE}
+trajectory.order.list<-list()
+
+psuper.obj.list<-list()
+
+set.seed(53144)
+
+for (i in 1:length(slice.list)) {
+
+
+tmp<-slice.list[[i]]
+
+# normalize the data
+
+DefaultAssay(tmp)<-"RNA"
+
+tmp <- NormalizeData(tmp, normalization.method = "LogNormalize", 
+                          scale.factor = 100000)
+
+tmp<- FindVariableFeatures(tmp,selection.method = "vst",
+                              nfeatures = 2000)
+
+tmp<- ScaleData(tmp,vars.to.regress =c("nGene","nCount","percent.mt"),verbose = F)
+
+tmp<-as.SingleCellExperiment(tmp)
+
+# Run psupertime
+
+y=factor(tmp$liver.zonation,levels=c("PV","Mid","CV"))
+
+set.seed(53144)
+
+psuper_obj  = psupertime(tmp, y,n_folds = 10,min_expression =0.1,
+                         sel_genes = "all",
+                         score = "xentropy",test_propn=0.3)
+
+psuper_obj$proj_dt$psuper<-normalize.trajectory(psuper_obj$proj_dt$psuper)
+psuper_obj$cuts_dt[,1]<-NA
+
+plot_labels_over_psupertime(psuper_obj, 
+                            label_name='liver.zonation',
+                            palette = "Set2")+
+  xlab("PV-CV Trajectory")+xlim(-1.5,1.5)+
+  ggtitle(tmp$id)+
+  theme(plot.title = element_text(hjust = 0.5, 
+                                  vjust = 1,
+                                  size = 20, 
+                                  face = "bold"),
+    axis.title.x = element_text(face = "bold", size = 15), 
+    axis.title.y = element_text(face = "bold", size = 15))
+
+ggsave(filename =paste0("R figures/psupertime/Density plot-",unique(tmp$id),".pdf"),dpi = 150,height = 4,width = 6)
+
+ggsave(filename =paste0("R figures/psupertime/Density plot-",unique(tmp$id),".png"),dpi = 150,height = 4,width = 6)
+
+plot_identified_gene_coefficients(psuper_obj)+
+  ggtitle(tmp$id)+xlab("")+
+  theme(plot.title = element_text(hjust = 0.5, 
+                                  vjust = 1, 
+                                  size = 20, 
+                                  face = "bold"),
+        axis.title.y = element_text(face = "bold", size = 15))
+
+ggsave(filename =paste0("R figures/psupertime/Gene Coefficience-",unique(tmp$id),".pdf"),dpi = 150,height = 4,width = 6)
+
+ggsave(filename =paste0("R figures/psupertime/Gene Coefficience-",unique(tmp$id),".png"),dpi = 150,height = 4,width = 6)
+
+
+plot_identified_genes_over_psupertime(psuper_obj, 
+                                      label_name='liver.zonation',
+                                      palette = "Set2")+
+  ylab("PV-CV Trajectory")+
+  ggtitle(tmp$id)+
+  theme(plot.title = element_text(hjust = 0.5, 
+                                  vjust = 1, 
+                                  size = 20, 
+                                  face = "bold"),
+    axis.title.x = element_text(face = "bold", size = 15), 
+    axis.title.y = element_text(face = "bold", size = 15))
+
+ggsave(filename =paste0("R figures/psupertime/Feature Trajectory plot-",unique(tmp$id),".pdf"),dpi = 150,height = 6,width = 8)
+
+ggsave(filename =paste0("R figures/psupertime/Feature Trajectory plot-",unique(tmp$id),".png"),dpi = 150,height = 6,width = 8)
+
+
+trajectory.order<-psuper_obj$proj_dt[,c(1:2)]
+
+trajectory.order.list[[i]]<-trajectory.order
+names(trajectory.order.list)[i]<-as.character(unique(tmp$id))
+
+
+psuper.obj.list[[i]]<-psuper_obj
+names(psuper.obj.list)[i]<-as.character(unique(tmp$id))
+
+rm(tmp,psuper_obj,trajectory.order,y)
+
+gc()
+
+}
+
+save(trajectory.order.list,psuper.obj.list,file = "psupertime output.RData")
+
+```
+
+```{r,add metadata to seurat,include=FALSE}
+trajectory.mat<-as.data.frame(do.call(rbind,trajectory.order.list))
+
+rownames(trajectory.mat)<-trajectory.mat$cell_id
+
+colnames(trajectory.mat)[2]<-"PV.CV.Trajectory"
+
+integrated.xDbit<-AddMetaData(integrated.xDbit,trajectory.mat)
+
+save(integrated.xDbit,file = "filter data.RData")
+
+```
+
+```{r,Umap plot for all slice,include=FALSE}
+#slice.list<-SplitObject(integrated.xDbit, split.by = "id")
+
+integrated.xDbit$PV.CV.Trajectory<-as.numeric(integrated.xDbit$PV.CV.Trajectory)
+
+FeatureDimPlot(integrated.xDbit,features ="PV.CV.Trajectory",
+               palette = "rocket",bg_cutoff = -1,
+               theme_use ="theme_blank",
+            reduction ="umap" )+
+      ggtitle(c("PV-CV axis"))+
+      theme(plot.background = element_rect(fill = "black", color = "black"),
+            panel.background = element_rect(fill = "black", color = "black"),
+            plot.margin = unit(c(1,1,1,1), "lines"), 
+            text = element_text(color = "white"), 
+            axis.title = element_text(color = "white"), 
+            axis.text = element_text(color = "white"),
+            legend.title = element_text(color = "white"), 
+            legend.text = element_text(color = "white"), 
+            plot.title = element_text(color = "white", hjust = 0.5,
+                                      face = "bold",size = 20))+
+      theme(aspect.ratio = 1) 
+
+ggsave(filename = "R figures/psupertime/Trajectory plot(umap).pdf",width = 5,height = 4)
+ggsave(filename = "R figures/psupertime/Trajectory plot(umap).png",width = 5,height = 4)
+
+FeatureDimPlot(integrated.xDbit,features ="Cyp2f2",
+               palette = "Spectral",
+               theme_use ="theme_blank",
+            reduction ="umap" )+
+      ggtitle(c("Cyp2f2"))+
+      theme(plot.background = element_rect(fill = "black", color = "black"),
+            panel.background = element_rect(fill = "black", color = "black"),
+            plot.margin = unit(c(1,1,1,1), "lines"), 
+            text = element_text(color = "white"), 
+            axis.title = element_text(color = "white"), 
+            axis.text = element_text(color = "white"),
+            legend.title = element_text(color = "white"), 
+            legend.text = element_text(color = "white"), 
+            plot.title = element_text(color = "white", hjust = 0.5,
+                                      face = "bold",size = 20))+
+      theme(aspect.ratio = 1) 
+
+ggsave(filename = "R figures/psupertime/Trajectory plot-Cyp2f2(umap).pdf",width = 5,height = 4)
+ggsave(filename = "R figures/psupertime/Trajectory plot-Cyp2f2(umap).png",width = 5,height = 4)
+
+FeatureDimPlot(integrated.xDbit,features ="Cyp2e1",
+               palette = "Spectral",
+               theme_use ="theme_blank",
+            reduction ="umap" )+
+      ggtitle(c("Cyp2e1"))+
+      theme(plot.background = element_rect(fill = "black", color = "black"),
+            panel.background = element_rect(fill = "black", color = "black"),
+            plot.margin = unit(c(1,1,1,1), "lines"), 
+            text = element_text(color = "white"), 
+            axis.title = element_text(color = "white"), 
+            axis.text = element_text(color = "white"),
+            legend.title = element_text(color = "white"), 
+            legend.text = element_text(color = "white"), 
+            plot.title = element_text(color = "white", hjust = 0.5,
+                                      face = "bold",size = 20))+
+      theme(aspect.ratio = 1) 
+
+ggsave(filename = "R figures/psupertime/Trajectory plot-Cyp2e1(umap).pdf",width = 5,height = 4)
+ggsave(filename = "R figures/psupertime/Trajectory plot-Cyp2e1(umap).png",width = 5,height = 4)
+
+CellDimPlot(integrated.xDbit,group.by = "liver.zonation",
+               palette = "Set2",
+               theme_use ="theme_blank",
+            reduction ="umap" )+
+      ggtitle(c("Liver Zonation"))+
+      theme(plot.background = element_rect(fill = "black", color = "black"),
+            panel.background = element_rect(fill = "black", color = "black"),
+            plot.margin = unit(c(1,1,1,1), "lines"), 
+            text = element_text(color = "white"), 
+            axis.title = element_text(color = "white"), 
+            axis.text = element_text(color = "white"),
+            legend.title = element_text(color = "white"), 
+            legend.text = element_text(color = "white"), 
+            plot.title = element_text(color = "white", hjust = 0.5,
+                                      face = "bold",size = 20))+
+      theme(aspect.ratio = 1) 
+
+ggsave(filename = "R figures/psupertime/Trajectory plot-liver.zonation(umap).pdf",width = 5,height = 4)
+ggsave(filename = "R figures/psupertime/Trajectory plot-liver.zonation(umap).png",width = 5,height = 4)
+```
+
+```{r,SpatialTrajectoryPlot for each slide,include=FALSE}
+source("SpatialTrajectoryPlot.R")
+
+slice.list<-slice.list[-15]
+pdf(file = "R figures/psupertime/Combined Trajectory plot.pdf",bg = "black",width = 22,height =20 )
+SpatialTrajectoryPlot(srt.list = slice.list,feature = "PV.CV.Trajectory",
+                     assay ="RNA",
+                     palette = "rocket" )
+dev.off()
+
+for (i in 1:length(selected.feature)) {
+  gene<-selected.feature[i]
+  
+  p<-SpatialGenePlot(srt.list = slice.list,feature = gene)
+  
+  ggsave(filename = paste0("R figures/CV/SpatialGenePlot-",gene,".png"), p,
+       limitsize = FALSE, bg = "black", width = 12, height = 50,dpi = 150)
+
+
+  ggsave(filename =  paste0("R figures/CV/SpatialGenePlot-",gene,".pdf"), p,
+       limitsize = FALSE, bg = "black", width = 12, height = 50,dpi = 150)
+  
+}
+
+```
+
+```{r,Denoise for the plot,include=FALSE}
+source("CreateDenoisedAssay.R")
+
+integrated.xDbit<-CreateDenoisedAssay(srt = integrated.xDbit,slot = "counts",new.assay.name = "DeNoise")
+
+save(integrated.xDbit,file = "filter data.RData")
+```
+
+
+```{r,zonation specific gene,include=FALSE}
+source("DbDynamicsPlot.R")
+
+top.feature<-c("Cyp2a5","Serpina6","Cyp2f2","Cyp2e1","Mup7","Gulo","Spp1",
+               "Elovl3","Gstm2","Hsd3b5","Ugt2b1","Acaa1b")
+
+for (i in 1:length(top.feature)) {
+  
+  DbDynamicsPlot(srt = integrated.xDbit,feature = top.feature[i],assay = "DeNoise")
+  
+  ggsave(filename = paste0("R figures/zonation specific gene by psupertime/Zonation gene-",top.feature[i],".pdf"),
+         width = 5,height = 4,dpi = 150)
+  ggsave(filename = paste0("R figures/zonation specific gene by psupertime/Zonation gene-",top.feature[i],".png"),
+          width = 5,height = 4,dpi = 150)
+}
+
+```
+
+# scMagSigPro at RNA
+## run scMagSigPro
+```{r,include=FALSE}
+DefaultAssay(integrated.xDbit)<-"RNA"
+xdbit.sce<-as.SingleCellExperiment(integrated.xDbit)
+```
+
+```{r,include=FALSE}
+xdbit.mag.obj<-as_scmp(object = xdbit.sce,from = "sce",
+                       align_pseudotime = T,
+                       verbose = T,
+                       additional_params = list(labels_exist = TRUE,
+                                                exist_ptime_col = "PV.CV.Trajectory",
+                                                exist_path_col = "age"))
+
+xdbit.mag.obj <- sc.squeeze(xdbit.mag.obj)
+
+rm(xdbit.sce)
+```
+
+```{r,plot bin,include=FALSE}
+p<-plotBinTile(xdbit.mag.obj)+
+  ggtitle("Binned Pseudotime by scMagSigPro")+
+  ylab("Group")+xlab("Binned Pseudotime ")+
+  scale_fill_viridis(name = "Bin Size")+
+  theme(plot.title = element_text(face = "bold",size = 14,hjust = 0.5),
+        axis.title =element_text(face = "bold",size = 12),
+        axis.text = element_text(size = 12))
+ggsave(p,filename = "R figures/scMagSigPro/pseudotime bins.pdf",width = 6,height = 4,dpi = 300)
+ggsave(p,filename = "R figures/scMagSigPro/pseudotime bins.png",width = 6,height = 4,dpi = 300)  
+```
+
+```{r,set degree,include=FALSE}
+xdbit.mag.obj<- sc.set.poly(xdbit.mag.obj, poly_degree =3)
+
+save(xdbit.mag.obj,file ="scMagSigPro obj.RData" )
+```
+
+```{r,run scMagSigPro,include=FALSE}
+# Detect non-flat profiles
+xdbit.mag.obj <- sc.p.vector(xdbit.mag.obj,
+                             offset = TRUE, 
+                             p_value = 0.05, 
+                             min_na = 10,
+                             verbose =T,
+                             log_offset = TRUE
+)
+
+# Model refinement
+
+xdbit.mag.obj <- sc.t.fit(xdbit.mag.obj, verbose = TRUE)
+
+save(xdbit.mag.obj,file ="scMagSigPro obj.RData" )
+```
+
+```{r,get sig gene,include=FALSE}
+xdbit.mag.obj <- sc.filter(
+  scmpObj = xdbit.mag.obj ,
+  rsq = 0.7,
+  vars = "groups",
+  intercept = "dummy",
+  includeInflu = F
+)
+```
+
+
+```{r,cluster the sig scMagSigPro gene,include=FALSE}
+xdbit.mag.obj<- sc.cluster.trend(
+  xdbit.mag.obj,
+  cluster_by = "counts",
+  geneSet = "union",
+  k =6
+)
+
+p<-plotTrendCluster(
+  scmpObj =xdbit.mag.obj,
+  plot = "counts",
+  logs = TRUE,
+  summary_mode='mean',
+  smoothness = 0.01,
+  verbose = FALSE,
+  lines = TRUE
+)
+
+p<-p+ggtitle("Dynamical Gene Expression over PV-CV axis")+ylab("Binned Pseudobulk Expression")+
+  xlab("Pooled PV-CV Trajectory")+
+  theme(plot.title = element_text(face = "bold",size = 14,hjust = 0.5),
+        axis.text.x = element_text(angle = 0),
+        axis.title =element_text(face = "bold",size = 12),
+        axis.text = element_text(size = 12))
+
+
+ggsave(p,filename = "R figures/scMagSigPro/clustered scMagSigPro Sig Genes.png",width = 7,height = 5,dpi = 300) 
+ggsave(p,filename = "R figures/scMagSigPro/clustered scMagSigPro Sig Genes.pdf",width = 7,height = 5,dpi = 300) 
+```
+
+```{r,extract the sig genes}
+sig.mag.gene<-as.data.frame( do.call(rbind,xdbit.mag.obj@Significant@clusters))
+
+sig.mag.gene$gene=rownames(sig.mag.gene)
+colnames(sig.mag.gene)[1]<-"cluster"
+
+save(sig.mag.gene,file = "sig scMagSigPro gene.RData")
+write.csv(sig.mag.gene,file = "sig scMagSigPro gene.csv")
+```
+
+```{r,add lineage for seu}
+integrated.xDbit$Young.Trajectory<-integrated.xDbit$PV.CV.Trajectory
+integrated.xDbit$Young.Trajectory[which(integrated.xDbit$age=="old")]<-NA
+
+integrated.xDbit$Old.Trajectory<-integrated.xDbit$PV.CV.Trajectory
+integrated.xDbit$Old.Trajectory[which(integrated.xDbit$age=="young")]<-NA
+```
+
+```{r,include=FALSE}
+integrated.xDbit <- RunDynamicFeatures(srt = integrated.xDbit, 
+                                       lineages = c("Young.Trajectory",                                                   "Old.Trajectory"),
+                                       features =sig.mag.gene$gene,assay = "DeNoise",
+                                       BPPARAM = BiocParallel::SnowParam(workers = 1))
+```
+
+```{r}
+cluster.gene<-paste0("Cluster_",sig.mag.gene$cluster)
+names(cluster.gene)<-sig.mag.gene$gene
+
+integrated.xDbit <- AnnotateFeatures(integrated.xDbit, species = "Mus_musculus", db = c("TF", "CSPA"))
+
+ht <- DynamicHeatmap(
+  srt =integrated.xDbit, 
+  lineages = c("Young.Trajectory", "Old.Trajectory"),
+  use_fitted = TRUE,  reverse_ht = F,
+  pseudotime_label = 25, 
+  feature_split = cluster.gene,
+  cluster_rows = TRUE,
+  min_expcells = 1,
+  r.sq = 0,
+  dev.expl = 0,
+  padjust = 1,pseudotime_palette = "plasma",
+  cell_annotation =c("age","liver.zonation"),
+  cell_annotation_palette = c("lancet","npg"),
+  species = "Mus_musculus", db = c("GO_BP","Reactome"),
+  anno_terms = TRUE, 
+  anno_keys = F, 
+  anno_features = F,
+  feature_annotation = c("TF", "CSPA"),
+  feature_annotation_palcolor = list(c("gold", "steelblue"), c("forestgreen")),
+  topTerm =6,
+  height = 8, width = 2,
+  use_raster = T,
+  raster_by_magick = T,
+)
+pdf(file = "R figures/scMagSigPro/dynamics heatmap.pdf",width = 16,height = 18)
+print(ht$plot)
+dev.off()
+
+save(integrated.xDbit,file = "filter data.Rdata")
+
+save(ht,file="heatmap obj for scMagSigPro.RData")
+```
+## TCA
+
+```{r,include=FALSE}
+# Extract TCA associated gene and calcuate the module score
+load("heatmap obj for scMagSigPro.RData")
+
+enrich.res<-ht$enrichment$enrichment
+
+enrich.res<-enrich.res[which(enrich.res$Database=="Reactome" &
+                               enrich.res$p.adjust<0.05),]
+
+tca.res<-enrich.res[which(enrich.res$Description=="The citric acid (TCA) cycle and respiratory electron transport"),]
+
+tca.gene<-str_split(tca.res$geneID,"/")[[1]]
+
+tca.gene.list<-list("TCA.Module.Score"=tca.gene)
+
+integrated.xDbit<-AddModuleScore_UCell(integrated.xDbit,features = tca.gene.list,BPPARAM = BiocParallel::SnowParam(workers = 1))
+
+# dynamic heatmap for all associated gene
+
+integrated.xDbit <- RunDynamicFeatures(srt = integrated.xDbit, 
+                                       lineages = c("Young.Trajectory",                                                   "Old.Trajectory"),
+                                       features =tca.gene,
+                                       assay = "DeNoise",
+                                       BPPARAM = BiocParallel::SnowParam(workers = 1))
+
+ht1 <- DynamicHeatmap(
+  srt =integrated.xDbit, features = tca.gene,
+  assay = "DeNoise",
+  lineages = c("Young.Trajectory", "Old.Trajectory"),
+  use_fitted = TRUE,  reverse_ht = F,
+  pseudotime_label = 25, 
+  cluster_rows = TRUE,
+  min_expcells = 1,
+  nlabel = 10,
+  show_row_names = F,
+  r.sq = 0,
+  dev.expl = 0,
+  padjust = 1,pseudotime_palette = "plasma",
+  cell_annotation =c("age","liver.zonation"),
+  cell_annotation_palette = c("lancet","npg"),
+  topTerm =6,
+  height = 4, width = 2,
+  use_raster = T,
+  raster_by_magick = T,
+)
+pdf(file = "R figures/scMagSigPro/TCA/dynamics heatmap for TCA.pdf",width = 8,height = 6)
+print(ht1$plot)
+dev.off()
+```
+
+
+
+```{r,lm for ploidy,include=FALSE}
+source("ScatterHistoPlot.R")
+p<-ScatterHistoPlot(seu = integrated.xDbit,
+                 var = "TCA.Module.Score_UCell",
+                 plot.x = "nuclei.2n",
+                 xlab = "2n Probability",
+                 plot.y = "TCA.Module.Score_UCell",
+                 ylab = "TCA Module Score")
+
+ggsave(p,filename = "R figures/scMagSigPro/TCA/lm between 2n and TCA score.pdf",height = 4,width = 6)
+ggsave(p,filename = "R figures/scMagSigPro/TCA/lm between 2n and TCA score.png",height = 4,width = 6)
+
+p<-ScatterHistoPlot(seu = integrated.xDbit,
+                 var = "TCA.Module.Score_UCell",
+                 plot.x = "nuclei.4n",
+                 xlab = "4n Probability",
+                 plot.y = "TCA.Module.Score_UCell",
+                 ylab = "TCA Module Score")
+
+ggsave(p,filename = "R figures/scMagSigPro/TCA/lm between 4n and TCA score.pdf",height = 4,width = 6)
+ggsave(p,filename = "R figures/scMagSigPro/TCA/lm between 4n and TCA score.png",height = 4,width = 6)
+```
+
+
+
+
+```{r,TCA asso genes for cluster 2,include=FALSE}
+integrated.xDbit$age<-factor(integrated.xDbit$age,
+                             levels = c("young","old"))
+
+p<-FeatureStatPlot(integrated.xDbit,group.by = "liver.zonation",
+                split.by = "age",palette ="lancet",
+                stat.by = c("Cox5a",
+                            "Ndufs1",
+                            "Rxra",
+                            "Fh1",
+                            "Pdha1",
+                            "Atp5d"),
+                assay = "DeNoise",
+                add_box = T,stack = T
+                )+
+  ggtitle("Mitochondria Dysfunction")+
+  theme(plot.title = element_text(face = "bold",hjust = 0.5,size = 14)
+        )
+
+ggsave(p,filename ="R figures/scMagSigPro/TCA/TCA gene.pdf",
+       height = 10,width = 6,dpi = 300)
+ggsave(p,filename ="R figures/scMagSigPro/TCA/TCA gene.png",
+       height = 10,width = 6,dpi = 300)
+
+
+source("DbDynamicsPlot.R") 
+
+gene.idx<-c("Cox5a","Ndufs1","Rxra","Fh1", "Pdha1","Atp5d")
+
+for (i in seq_along(gene.idx)) {
+  
+ p<-DbDynamicsPlot(srt = integrated.xDbit,feature = gene.idx[i],
+                   assay = "DeNoise")
+ 
+ ggsave(p,filename = paste0("R figures/scMagSigPro/TCA/",
+                            gene.idx[i],".pdf"),
+        width = 6,height = 4,dpi = 300)
+ 
+ ggsave(p,filename = paste0("R figures/scMagSigPro/TCA/",
+                            gene.idx[i],".png"),
+        width = 6,height = 4,dpi = 300)
+  
+}
+
+# module score
+p<-DbDynamicsPlot(srt = integrated.xDbit,
+                  feature = "TCA.Module.Score_UCell",
+                   assay = "DeNoise")
+
+ ggsave(p,filename = paste0("R figures/scMagSigPro/TCA/TCA module score.pdf"),
+        width = 6,height = 4,dpi = 300)
+ 
+ ggsave(p,filename = paste0("R figures/scMagSigPro/TCA/TCA module score.png"),
+        width = 6,height = 4,dpi = 300)
+ 
+rm(p)
+```
+
+```{r,metabolite,include=FALSE}
+load("metabolomics data.RData")
+
+
+p<-FeatureDimPlot(meta.seu,features = "C6H10O8P",
+                  reduction = "spatial",palette = "RdYlBu",
+               slot = "counts",aspect.ratio =0.3,pt.size = 0.1,
+               lower_quantile =0.05,upper_quantile = 0.9)
+
+ggsave(p,filename = "R figures/scMagSigPro/TCA/TCA metabolite/Glucose-6-phosphate.png",width =15,height = 5,dpi = 300 )
+
+ggsave(p,filename = "R figures/scMagSigPro/TCA/TCA metabolite/Glucose-6-phosphate.pdf",width =15,height = 5,dpi = 300 )
+
+
+p<-FeatureDimPlot(meta.seu,features = "C21H36O6P",
+                  reduction = "spatial",palette = "RdYlBu",
+               slot = "counts",aspect.ratio =0.3,pt.size =1,
+               lower_quantile =0.05,upper_quantile = 0.95)
+
+ggsave(p,filename = "R figures/scMagSigPro/TCA/TCA metabolite/mitochondrial membrane phospholipid.png",width =15,height = 5,dpi = 300 )
+
+ggsave(p,filename = "R figures/scMagSigPro/TCA/TCA metabolite/mitochondrial membrane phospholipid.pdf",width =15,height = 5,dpi = 300 )
+
+p<-FeatureDimPlot(meta.seu,features = "C10H13N5O7P",
+                  reduction = "spatial",palette = "RdYlBu",
+               slot = "counts",aspect.ratio =0.3,pt.size = 1,
+               lower_quantile = 0.05,upper_quantile = 0.95)
+
+ggsave(p,filename = "R figures/scMagSigPro/TCA/TCA metabolite/AMP.png",width =15,height = 5,dpi = 300 )
+
+ggsave(p,filename = "R figures/scMagSigPro/TCA/TCA metabolite/AMP.pdf",width =15,height = 5,dpi = 300 )
+###
+p<-FeatureDimPlot(meta.seu,features = "C16H31O2",
+                  reduction = "spatial",palette = "RdYlBu",
+               slot = "counts",aspect.ratio =0.3,pt.size = 1,
+               lower_quantile = 0.05,upper_quantile = 0.95)
+
+ggsave(p,filename = "R figures/scMagSigPro/TCA/b-oxidation/Palmitic Acid.png",width =15,height = 5,dpi = 300 )
+
+ggsave(p,filename = "R figures/scMagSigPro/TCA/b-oxidation/Palmitic Acid.pdf",width =15,height = 5,dpi = 300 )
+
+p<-FeatureDimPlot(meta.seu,features = "C18H31O2",
+                  reduction = "spatial",palette = "RdYlBu",
+               slot = "counts",aspect.ratio =0.3,pt.size = 1,
+               lower_quantile = 0.05,upper_quantile = 0.95)
+
+ggsave(p,filename = "R figures/scMagSigPro/TCA/b-oxidation/Linoleic Acid.png",width =15,height = 5,dpi = 300 )
+
+ggsave(p,filename = "R figures/scMagSigPro/TCA/b-oxidation/Linoleic Acid.pdf",width =15,height = 5,dpi = 300 )
+
+p<-FeatureDimPlot(meta.seu,features = "C18H35O2",
+                  reduction = "spatial",palette = "RdYlBu",
+               slot = "counts",aspect.ratio =0.3,pt.size = 1,
+               lower_quantile = 0.05,upper_quantile = 0.95)
+
+ggsave(p,filename = "R figures/scMagSigPro/TCA/b-oxidation/Stearic Acid.png",width =15,height = 5,dpi = 300 )
+
+ggsave(p,filename = "R figures/scMagSigPro/TCA/b-oxidation/Stearic Acid.pdf",width =15,height = 5,dpi = 300 )
+
+p<-FeatureDimPlot(meta.seu,features = "C20H31O2",
+                  reduction = "spatial",palette = "RdYlBu",
+               slot = "counts",aspect.ratio =0.3,pt.size = 1,
+               lower_quantile = 0.05,upper_quantile = 0.95)
+
+ggsave(p,filename = "R figures/scMagSigPro/TCA/b-oxidation/Eicosadienoic Acid.png",width =15,height = 5,dpi = 300 )
+
+ggsave(p,filename = "R figures/scMagSigPro/TCA/b-oxidation/Eicosadienoic Acid.pdf",width =15,height = 5,dpi = 300 )
+
+
+##
+meta.seu$age<-factor(meta.seu$age,levels = c("young","old"))
+
+p<-FeatureStatPlot(meta.seu,group.by = "age",palette ="lancet",
+                stat.by = c("C6H10O8P",
+                            "C21H36O6P",
+                            "C10H13N5O7P"),
+                assay = "Metabolite",slot = "counts",
+                add_box = T,stack = T
+                )+
+  ggtitle("Impaired TCA Cycle")+
+  theme(plot.title = element_text(face = "bold",hjust = 0.5,size = 14)
+        )
+
+ggsave(p,filename ="R figures/scMagSigPro/TCA/TCA metabolite/TCA metabolite.pdf",
+       height = 6,width = 6,dpi = 300)
+ggsave(p,filename ="R figures/scMagSigPro/TCA/TCA metabolite/TCA metabolite.png",
+       height = 6,width = 6,dpi = 300)
+
+## FeatureStatPlot to check fatty acid accumulation
+meta.seu$age<-factor(meta.seu$age,levels = c("young","old"))
+
+p<-FeatureStatPlot(meta.seu,group.by = "age",palette ="lancet",
+                stat.by = c("C16H31O2","C18H31O2","C18H35O2","C20H31O2"),
+                assay = "Metabolite",slot = "counts",
+                add_box = T,stack = T
+                )+
+  ggtitle("impaired mitochondrial β-oxidation")+
+  theme(plot.title = element_text(face = "bold",hjust = 0.5,size = 14)
+        )
+
+ggsave(p,filename ="R figures/scMagSigPro/TCA/b-oxidation/b-oxidation.pdf",
+       height = 6,width = 6,dpi = 300)
+ggsave(p,filename ="R figures/scMagSigPro/TCA/b-oxidation/b-oxidation.png",
+       height = 6,width = 6,dpi = 300)
+```
+
+## bile acids, fatty acid and peroxisomal lipid metabolism
+```{r}
+# Extract bile acids, fatty acid and peroxisomal lipid metabolism associated gene and calcuate the module score
+load("heatmap obj for scMagSigPro.RData")
+
+enrich.res<-ht$enrichment$enrichment
+
+enrich.res<-enrich.res[which(enrich.res$Database=="Reactome" &
+                               enrich.res$p.adjust<0.05),]
+
+bile.res<-enrich.res[which(enrich.res$Description=="Bile acid and bile salt metabolism"),]
+
+fatty.res<-enrich.res[which(enrich.res$Description=="Fatty acid metabolism"),]
+
+peroxisomal.res<-enrich.res[which(enrich.res$Description=="Peroxisomal lipid metabolism"),]
+
+bile.gene<-str_split(bile.res$geneID,"/")[[1]]
+fatty.gene<-c(str_split(fatty.res$geneID,"/")[[1]],
+              str_split(fatty.res$geneID,"/")[[2]])
+peroxisomal.gene<-str_split(peroxisomal.res$geneID,"/")[[1]]
+
+gene.list<-list("Bile.Acid.Metabolism.Module.Score"=bile.gene,
+                "Fatty.acid.metabolism.Module.Score"=fatty.gene,
+                "Peroxisomal.lipid.metabolism.Module.Score"=peroxisomal.gene)
+
+gene.vec<-c(bile.gene,fatty.gene,peroxisomal.gene)
+names(gene.vec)<-c(rep("Bile Acid Metabolism",5),
+                   rep("Fatty acid Metabolism",43),
+                   rep("Peroxisomal Lipid Metabolism",4))
+
+integrated.xDbit<-AddModuleScore_UCell(integrated.xDbit,
+                                       assay = "RNA",
+                                       features =gene.list,
+                                       BPPARAM = BiocParallel::SnowParam(workers = 1),name = "")
+
+# dynamic heatmap for all associated gene
+
+integrated.xDbit <- RunDynamicFeatures(srt = integrated.xDbit, 
+                                       lineages = c("Young.Trajectory",                                                   "Old.Trajectory"),
+                                       features =gene.vec,
+                                       assay = "DeNoise",
+                                       BPPARAM = BiocParallel::SnowParam(workers = 1))
+
+gene.vec<-gene.vec[-c(41,44,46,47)]
+
+gene.cluster<-names(gene.vec)
+names(gene.cluster)<-gene.vec
+
+ht1 <- DynamicHeatmap(
+  srt =integrated.xDbit, features = gene.vec,
+  lineages = c("Young.Trajectory", "Old.Trajectory"),
+  use_fitted = TRUE,  reverse_ht = F,
+  pseudotime_label = 25, 
+ feature_split =gene.cluster,
+  cluster_rows = TRUE,
+  min_expcells = 1,
+  nlabel = 15,
+  show_row_names = F,
+  r.sq = 0,
+  dev.expl = 0,
+  padjust = 1,pseudotime_palette = "plasma",
+  cell_annotation =c("age","liver.zonation"),
+  cell_annotation_palette = c("lancet","npg"),
+  height = 4, width = 2,
+  use_raster = T,
+  raster_by_magick = T,
+)
+pdf(file = "R figures/scMagSigPro/metabolism/dynamics heatmap for metabolism.pdf",width = 12,height =6)
+print(ht1$plot)
+dev.off()
+
+```
+
+```{r,lm for ploidy ,include=FALSE}
+source("ScatterHistoPlot.R")
+p<-ScatterHistoPlot(seu = integrated.xDbit,
+                 var = "Fatty.Acid.Metabolism.Module.Score",
+                 plot.x = "nuclei.2n",
+                 xlab = "2n Probability",
+                 plot.y = "Fatty.Acid.Metabolism.Module.Score",
+                 ylab = "Fatty Acid Metabolism Module Score")
+
+ggsave(p,filename = "R figures/scMagSigPro/metabolism/lm between 2n and Fatty Acid Metabolism Module Score.pdf",height = 4,width = 6)
+ggsave(p,filename = "R figures/scMagSigPro/metabolism/lm between 2n and Fatty Acid Metabolism Module Score.png",height = 4,width = 6)
+
+p<-ScatterHistoPlot(seu = integrated.xDbit,
+                 var = "Fatty.Acid.Metabolism.Module.Score",
+                 plot.x = "nuclei.4n",
+                 xlab = "4n Probability",
+                 plot.y = "Fatty.Acid.Metabolism.Module.Score",
+                 ylab = "Fatty Acid Metabolism Module Score")
+
+ggsave(p,filename = "R figures/scMagSigPro/metabolism/lm between 4n and Fatty Acid Metabolism Module Score.pdf",height = 4,width = 6)
+ggsave(p,filename = "R figures/scMagSigPro/metabolism/lm between 4n and Fatty Acid Metabolism Module Score.png",height = 4,width = 6)
+```
+
+```{r,metablism asso genes for cluster 3,include=FALSE}
+integrated.xDbit$age<-factor(integrated.xDbit$age,
+                             levels = c("young","old"))
+
+p<-FeatureStatPlot(integrated.xDbit,group.by = "liver.zonation",
+                split.by = "age",palette ="lancet",
+                stat.by = c("Cyp7a1",
+                            "Hsd3b7",
+                            "Acaca",
+                            "Cyp4a12b",
+                            "Elovl5",
+                            "Hao2"),
+                assay = "DeNoise",
+                add_box = T,stack = T
+                )+
+  ggtitle("Dysfunctional Fatty Acid Metabolism")+
+  theme(plot.title = element_text(face = "bold",hjust = 0.5,size = 14)
+        )
+
+ggsave(p,filename ="R figures/scMagSigPro/metabolism/metabolism gene.pdf",
+       height = 10,width = 6,dpi = 300)
+ggsave(p,filename ="R figures/scMagSigPro/metabolism/metabolism gene.png",
+       height = 10,width = 6,dpi = 300)
+
+
+source("DbDynamicsPlot.R") 
+
+gene.idx<-c("Cyp7a1", "Hsd3b7", "Acaca","Cyp4a12b", "Elovl5", "Hao2")
+
+for (i in seq_along(gene.idx)) {
+  
+ p<-DbDynamicsPlot(srt = integrated.xDbit,feature = gene.idx[i],
+                   assay = "DeNoise")
+ 
+ ggsave(p,filename = paste0("R figures/scMagSigPro/metabolism/",
+                            gene.idx[i],".pdf"),
+        width = 6,height = 4,dpi = 300)
+ 
+ ggsave(p,filename = paste0("R figures/scMagSigPro/metabolism/",
+                            gene.idx[i],".png"),
+        width = 6,height = 4,dpi = 300)
+  
+}
+
+# module score
+p<-DbDynamicsPlot(srt = integrated.xDbit,
+                  feature = "Fatty.Acid.Metabolism.Module.Score",
+                   assay = "DeNoise")
+
+ ggsave(p,filename = paste0("R figures/scMagSigPro/metabolism/Fatty Acid Metabolism Module Score.pdf"),
+        width = 6,height = 4,dpi = 300)
+ 
+ ggsave(p,filename = paste0("R figures/scMagSigPro/metabolism/Fatty Acid Metabolism Module Score.png"),
+        width = 6,height = 4,dpi = 300)
+ 
+rm(p)
+```
+
+```{r,subset example for vector field,include=FALSE}
+Idents(integrated.xDbit)<-"id"
+example.xdbit<-subset(integrated.xDbit,idents=c("37_43_C1","37_43_A2"))
+save(example.xdbit,file = "example xdbit.RData")
+```
+
+```{r,prepare for vf,include=FALSE}
+sp.list<-SplitObject(example.xdbit,split.by = "age")
+
+source("PrepareForVF_RNA.R")
+sp.list[[1]]<-PrepareForVF_RNA(srt =sp.list[[1]])
+sp.list[[2]] <-PrepareForVF_RNA(srt =sp.list[[2]]  )
+names(sp.list)<-c("Old","Young")
+```
+
+
+```{r,vector field,include=FALSE}
+source("runVectorFields.R")
+source("plotVectorFields.R")
+#Cyp4a12b
+for (i in 1:2) {
+  
+  vf<-runVectorFields(sp.list[[i]],features = "Cyp4a12b",dist.spot=5)
+
+  p<-plotVectorFields(VF = vf,parameter = "Cyp4a12b",pt.size = 3)
+  
+  ggsave(p,filename =paste0("R figures/scMagSigPro/metabolism/Cyp4a12b-VF-",
+                            names(sp.list)[i],".pdf"),dpi = 150,
+         width = 6,height = 5)
+    ggsave(p,filename =paste0("R figures/scMagSigPro/metabolism/Cyp4a12b-VF-",
+                            names(sp.list)[i],".png"),dpi = 150,
+         width = 6,height = 5)
+  
+}
+
+#Acaca
+for (i in 1:2) {
+  
+  vf<-runVectorFields(sp.list[[i]],features = "Acaca",dist.spot=5)
+
+  p<-plotVectorFields(VF = vf,parameter = "Acaca",pt.size = 3)
+  
+  ggsave(p,filename =paste0("R figures/scMagSigPro/metabolism/Acaca-VF-",
+                            names(sp.list)[i],".pdf"),dpi = 150,
+         width = 6,height = 5)
+    ggsave(p,filename =paste0("R figures/scMagSigPro/metabolism/Acaca-VF-",
+                            names(sp.list)[i],".png"),dpi = 150,
+         width = 6,height = 5)
+  
+}
+
+#Elovl5
+for (i in 1:2) {
+  
+  vf<-runVectorFields(sp.list[[i]],features = "Elovl5",dist.spot=5)
+
+  p<-plotVectorFields(VF = vf,parameter = "Elovl5",pt.size = 3)
+  
+  ggsave(p,filename =paste0("R figures/scMagSigPro/metabolism/Elovl5-VF-",
+                            names(sp.list)[i],".pdf"),dpi = 150,
+         width = 6,height = 5)
+    ggsave(p,filename =paste0("R figures/scMagSigPro/metabolism/Elovl5-VF-",
+                            names(sp.list)[i],".png"),dpi = 150,
+         width = 6,height = 5)
+  
+}
+```
+
+```{r,metabolite,include=FALSE}
+load("metabolomics data.RData")
+
+
+p<-FeatureDimPlot(meta.seu,features = "C27H45O4S",
+                  reduction = "spatial",palette = "RdYlBu",
+               slot = "counts",aspect.ratio =0.3,pt.size = 0.1,
+               lower_quantile =0.05,upper_quantile = 0.9)
+
+ggsave(p,filename = "R figures/scMagSigPro/metabolism/fatty acid metabolite/Cholesterol sulfate.png",width =15,height = 5,dpi = 300 )
+
+ggsave(p,filename = "R figures/scMagSigPro/metabolism/fatty acid metabolite/Cholesterol sulfate.pdf",width =15,height = 5,dpi = 300 )
+
+
+p<-FeatureDimPlot(meta.seu,features = "C26H44NO7S",
+                  reduction = "spatial",palette = "RdYlBu",
+               slot = "counts",aspect.ratio =0.3,pt.size =1,
+               lower_quantile =0.05,upper_quantile = 0.95)
+
+ggsave(p,filename = "R figures/scMagSigPro/metabolism/fatty acid metabolite/taurocholic acid.png",width =15,height = 5,dpi = 300 )
+
+ggsave(p,filename = "R figures/scMagSigPro/metabolism/fatty acid metabolite/taurocholic acid.pdf",width =15,height = 5,dpi = 300 )
+
+
+
+## FeatureStatPlot to check fatty acid accumulation
+meta.seu$age<-factor(meta.seu$age,levels = c("young","old"))
+
+p<-FeatureStatPlot(meta.seu,group.by = "age",palette ="lancet",
+                stat.by = c("C27H45O4S","C26H44NO7S"),
+                assay = "Metabolite",slot = "counts",
+                add_box = T,stack = T
+                )+
+  ggtitle("Dysfunctional Fatty Acid Metabolism")+
+  theme(plot.title = element_text(face = "bold",hjust = 0.5,size = 14)
+        )
+
+ggsave(p,filename ="R figures/scMagSigPro/metabolism/fatty acid metabolite/b-oxidation.pdf",
+       height = 6,width = 6,dpi = 300)
+ggsave(p,filename ="R figures/scMagSigPro/metabolism/fatty acid metabolite/b-oxidation.png",
+       height = 6,width = 6,dpi = 300)
+
+```
+
+
+## immune response
+```{r,Extract immune response and calcuate the module score,include=FALSE}
+# Extract immune response and calcuate the module score
+load("heatmap obj for scMagSigPro.RData")
+
+enrich.res<-ht$enrichment$enrichment
+
+enrich.res<-enrich.res[which(enrich.res$Database=="Reactome" &
+                               enrich.res$p.adjust<0.05),]
+
+Hemostasis.res<-enrich.res[which(enrich.res$Description=="Hemostasis"),]
+Platelet.res<-enrich.res[which(enrich.res$Description=="Platelet activation, signaling and aggregation"),]
+DAP12.res<-enrich.res[which(enrich.res$Description=="DAP12 interactions"),]
+Immunoregulatory.res<-enrich.res[which(enrich.res$Description=="Immunoregulatory interactions between a Lymphoid and a non-Lymphoid cell"),]
+
+Hemostasis.gene<-str_split(Hemostasis.res$geneID,"/")[[1]]
+Platelet.gene<-c(str_split(Platelet.res$geneID,"/")[[1]])
+DAP12.gene<-str_split(DAP12.res$geneID,"/")[[1]]
+Immunoregulatory.gene<-str_split(Immunoregulatory.res$geneID,"/")[[1]]
+
+gene.list<-list("Hemostasis.Module.Score"=Hemostasis.gene,
+                "Platelet.Activation.Module.Score"=Platelet.gene,
+                "DAP12.Interactions.Module.Score"=DAP12.gene,
+                "Immunoregulatory.Interactions.Module.Score"=Immunoregulatory.gene)
+
+
+
+integrated.xDbit<-AddModuleScore_UCell(integrated.xDbit,
+                                       assay = "RNA",
+                                       features =gene.list,
+                                       BPPARAM = BiocParallel::SnowParam(workers = 1),name = "")
+```
+
+```{r,DynamicHeatmap,include=FALSE}
+
+integrated.xDbit <- RunDynamicFeatures(srt = integrated.xDbit, 
+                                       lineages = c("Young.Trajectory",                                                   "Old.Trajectory"),
+                                       features =Hemostasis.gene,
+                                       assay = "DeNoise",
+                                       BPPARAM = BiocParallel::SnowParam(workers = 1))
+
+DefaultAssay(integrated.xDbit)<-"DeNoise"
+ht1 <- DynamicHeatmap(
+  srt =integrated.xDbit, features = Hemostasis.gene,
+  lineages = c("Young.Trajectory", "Old.Trajectory"),
+  use_fitted = TRUE,  reverse_ht = F,
+  pseudotime_label = 25, 
+  cluster_rows = TRUE,
+  min_expcells = 1,
+  nlabel = 10,
+  show_row_names = F,
+  r.sq = 0,
+  dev.expl = 0,
+  padjust = 1,pseudotime_palette = "plasma",
+  cell_annotation =c("age","liver.zonation"),
+  cell_annotation_palette = c("lancet","npg"),
+  height =4, width = 2,
+  use_raster = T,
+  raster_by_magick = T,
+)
+pdf(file = "R figures/scMagSigPro/immune/dynamics heatmap for metabolism(Hemostasis).pdf",width =8,height = 6)
+print(ht1$plot)
+dev.off()
+
+
+integrated.xDbit <- RunDynamicFeatures(srt = integrated.xDbit, 
+                                       lineages = c("Young.Trajectory",                                                   "Old.Trajectory"),
+                                       features =Platelet.gene,
+                                       assay = "DeNoise",
+                                       BPPARAM = BiocParallel::SnowParam(workers = 1))
+
+ht1 <- DynamicHeatmap(
+  srt =integrated.xDbit, features = Platelet.gene,
+  lineages = c("Young.Trajectory", "Old.Trajectory"),
+  use_fitted = TRUE,  reverse_ht = F,
+  pseudotime_label = 25, 
+  cluster_rows = TRUE,
+  min_expcells = 1,
+  nlabel = 10,
+  show_row_names = F,
+  r.sq = 0,
+  dev.expl = 0,
+  padjust = 1,pseudotime_palette = "plasma",
+  cell_annotation =c("age","liver.zonation"),
+  cell_annotation_palette = c("lancet","npg"),
+  height = 4, width = 2,
+  use_raster = T,
+  raster_by_magick = T,
+)
+pdf(file = "R figures/scMagSigPro/immune/dynamics heatmap for metabolism(Platelet).pdf",width =8,height = 6)
+print(ht1$plot)
+dev.off()
+
+integrated.xDbit <- RunDynamicFeatures(srt = integrated.xDbit, 
+                                       lineages = c("Young.Trajectory",                                                   "Old.Trajectory"),
+                                       features =DAP12.gene,
+                                       assay = "DeNoise",
+                                       BPPARAM = BiocParallel::SnowParam(workers = 1))
+
+ht1 <- DynamicHeatmap(
+  srt =integrated.xDbit, features = DAP12.gene,
+  lineages = c("Young.Trajectory", "Old.Trajectory"),
+  use_fitted = TRUE,  reverse_ht = F,
+  pseudotime_label = 25, 
+  cluster_rows = TRUE,
+  min_expcells = 1,
+  nlabel = 10,
+  show_row_names = F,
+  r.sq = 0,
+  dev.expl = 0,
+  padjust = 1,pseudotime_palette = "plasma",
+  cell_annotation =c("age","liver.zonation"),
+  cell_annotation_palette = c("lancet","npg"),
+  height = 4, width = 2,
+  use_raster = T,
+  raster_by_magick = T,
+)
+pdf(file = "R figures/scMagSigPro/immune/dynamics heatmap for metabolism(DAP12).pdf",width =8,height =6)
+print(ht1$plot)
+dev.off()
+
+```
+
+```{r,immune asspciated gene ,include=FALSE}
+source("DbDynamicsPlot.R") 
+
+gene.idx<-c("Gata6", "Itgb3", "Clu","Pecam1", "Clec1b", "Fcer1g","Fgg","Fga",
+           "Sirpa", "H2-Q7", "H2-Q6","Tyrobp")
+
+for (i in seq_along(gene.idx)) {
+  
+ p<-DbDynamicsPlot(srt = integrated.xDbit,feature = gene.idx[i],
+                   assay = "DeNoise")
+ 
+ ggsave(p,filename = paste0("R figures/scMagSigPro/immune/",
+                            gene.idx[i],".pdf"),
+        width = 6,height = 4,dpi = 300)
+ 
+ ggsave(p,filename = paste0("R figures/scMagSigPro/immune/",
+                            gene.idx[i],".png"),
+        width = 6,height = 4,dpi = 300)
+  
+}
+
+# module score
+p<-DbDynamicsPlot(srt = integrated.xDbit,
+                  feature =  "DAP12.Interactions.Module.Score",
+                   assay = "DeNoise")
+
+ ggsave(p,filename = paste0("R figures/scMagSigPro/immune/DAP12 Interactions Module Score.pdf"),
+        width = 6,height = 4,dpi = 300)
+ 
+ ggsave(p,filename = paste0("R figures/scMagSigPro/immune/DAP12 Interactions Module Score.png"),
+        width = 6,height = 4,dpi = 300)
+ 
+ p<-DbDynamicsPlot(srt = integrated.xDbit,
+                  feature =  "Hemostasis.Module.Score",
+                   assay = "DeNoise")
+
+ ggsave(p,filename = paste0("R figures/scMagSigPro/immune/Hemostasis Module Score.pdf"),
+        width = 6,height = 4,dpi = 300)
+ 
+ ggsave(p,filename = paste0("R figures/scMagSigPro/immune/Hemostasis Module Score.png"),
+        width = 6,height = 4,dpi = 300)
+ 
+ p<-DbDynamicsPlot(srt = integrated.xDbit,
+                  feature =  "Platelet.Activation.Module.Score",
+                   assay = "DeNoise")
+
+ ggsave(p,filename = paste0("R figures/scMagSigPro/immune/Platelet Activation Module Score.pdf"),
+        width = 6,height = 4,dpi = 300)
+ 
+ ggsave(p,filename = paste0("R figures/scMagSigPro/immune/Platelet Activation Module Score.png"),
+        width = 6,height = 4,dpi = 300)
+ 
+ 
+ 
+rm(p)
+## featurestatplot
+integrated.xDbit$age<-factor(integrated.xDbit$age,
+                             levels = c("young","old"))
+
+p<-FeatureStatPlot(integrated.xDbit,group.by = "liver.zonation",
+                split.by = "age",palette ="lancet",
+                stat.by = c("Gata6", "Itgb3", "Clu",
+                            "Pecam1", "Clec1b", 
+                            "Fcer1g","Fgg","Fga","Sirpa", 
+                            "H2-Q7", "H2-Q6","Tyrobp"),
+                assay = "DeNoise",
+                add_box = T,stack = T
+                )+
+  ggtitle("Dysfunctional immune response")+
+  theme(plot.title = element_text(face = "bold",hjust = 0.5,size = 14)
+        )
+
+ggsave(p,filename ="R figures/scMagSigPro/immune/immune gene.pdf",
+       height = 10,width = 6,dpi = 300)
+ggsave(p,filename ="R figures/scMagSigPro/immune/immune gene.png",
+       height = 10,width = 6,dpi = 300)
+
+```
+
+```{r,prepare for vf,include=FALSE}
+load("example xdbit.RData")
+DefaultAssay(example.xdbit)<-"DeNoise"
+sp.list<-SplitObject(example.xdbit,split.by = "age")
+
+source("PrepareForVF_RNA.R")
+sp.list[[1]]<-PrepareForVF_RNA(srt =sp.list[[1]])
+sp.list[[2]] <-PrepareForVF_RNA(srt =sp.list[[2]]  )
+names(sp.list)<-c("Old","Young")
+```
+
+```{r,vector field,include=FALSE}
+source("runVectorFields.R")
+source("plotVectorFields.R")
+#Gata6
+for (i in 1:2) {
+  
+  vf<-runVectorFields(sp.list[[i]],features = "Gata6",dist.spot=5)
+
+  p<-plotVectorFields(VF = vf,parameter = "Gata6",pt.size = 3)
+  
+  ggsave(p,filename =paste0("R figures/scMagSigPro/immune/Gata6-VF-",
+                            names(sp.list)[i],".pdf"),dpi = 150,
+         width = 6,height = 5)
+    ggsave(p,filename =paste0("R figures/scMagSigPro/immune/Gata6-VF-",
+                            names(sp.list)[i],".png"),dpi = 150,
+         width = 6,height = 5)
+  
+}
+
+#Fgg
+for (i in 1:2) {
+  
+  vf<-runVectorFields(sp.list[[i]],features = "Fgg",dist.spot=5)
+
+  p<-plotVectorFields(VF = vf,parameter = "Fgg",pt.size = 3)
+  
+  ggsave(p,filename =paste0("R figures/scMagSigPro/immune/Fgg-VF-",
+                            names(sp.list)[i],".pdf"),dpi = 150,
+         width = 6,height = 5)
+    ggsave(p,filename =paste0("R figures/scMagSigPro/immune/Fgg-VF-",
+                            names(sp.list)[i],".png"),dpi = 150,
+         width = 6,height = 5)
+  
+}
+
+#Fga
+for (i in 1:2) {
+  
+  vf<-runVectorFields(sp.list[[i]],features = "Fga",dist.spot=5)
+
+  p<-plotVectorFields(VF = vf,parameter = "Fga",pt.size = 3)
+  
+  ggsave(p,filename =paste0("R figures/scMagSigPro/immune/Fga-VF-",
+                            names(sp.list)[i],".pdf"),dpi = 150,
+         width = 6,height = 5)
+    ggsave(p,filename =paste0("R figures/scMagSigPro/immune/Fga-VF-",
+                            names(sp.list)[i],".png"),dpi = 150,
+         width = 6,height = 5)
+  
+}
+
+#H2-Q7
+for (i in 1:2) {
+  
+  vf<-runVectorFields(sp.list[[i]],features = "H2-Q7",dist.spot=5)
+
+  p<-plotVectorFields(VF = vf,parameter = "H2-Q7",pt.size = 3)
+  
+  ggsave(p,filename =paste0("R figures/scMagSigPro/immune/H2-Q7-VF-",
+                            names(sp.list)[i],".pdf"),dpi = 150,
+         width = 6,height = 5)
+    ggsave(p,filename =paste0("R figures/scMagSigPro/immune/H2-Q7-VF-",
+                            names(sp.list)[i],".png"),dpi = 150,
+         width = 6,height = 5)
+  
+}
+
+#H2-Q6
+for (i in 1:2) {
+  
+  vf<-runVectorFields(sp.list[[i]],features = "H2-Q6",dist.spot=5)
+
+  p<-plotVectorFields(VF = vf,parameter = "H2-Q6",pt.size = 3)
+  
+  ggsave(p,filename =paste0("R figures/scMagSigPro/immune/H2-Q6-VF-",
+                            names(sp.list)[i],".pdf"),dpi = 150,
+         width = 6,height = 5)
+    ggsave(p,filename =paste0("R figures/scMagSigPro/immune/H2-Q6-VF-",
+                            names(sp.list)[i],".png"),dpi = 150,
+         width = 6,height = 5)
+  
+}
+```
+
+```{r,metabolite,include=FALSE}
+load("metabolomics data.RData")
+
+
+p<-FeatureDimPlot(meta.seu,features = "C18H29O3S",
+                  reduction = "spatial",palette = "RdYlBu",
+               slot = "counts",aspect.ratio =0.3,pt.size = 0.1,
+               lower_quantile =0.05,upper_quantile = 0.9)
+
+ggsave(p,filename = "R figures/scMagSigPro/immune/Arachidonic acid.png",width =15,height = 5,dpi = 300 )
+
+ggsave(p,filename = "R figures/scMagSigPro/immune/Arachidonic acid.pdf",width =15,height = 5,dpi = 300 )
+
+
+p<-FeatureDimPlot(meta.seu,features = "C19H15O4",
+                  reduction = "spatial",palette = "RdYlBu",
+               slot = "counts",aspect.ratio =0.3,pt.size =1,
+               lower_quantile =0.05,upper_quantile = 0.95)
+
+ggsave(p,filename = "R figures/scMagSigPro/immune/Flavonoid.png",width =15,height = 5,dpi = 300 )
+
+ggsave(p,filename = "R figures/scMagSigPro/immune/Flavonoid.pdf",width =15,height = 5,dpi = 300 )
+
+
+p<-FeatureDimPlot(meta.seu,features = "C23H47NO7P",
+                  reduction = "spatial",palette = "RdYlBu",
+               slot = "counts",aspect.ratio =0.3,pt.size =1,
+               lower_quantile =0.05,upper_quantile = 0.95)
+
+ggsave(p,filename = "R figures/scMagSigPro/immune/Lysophosphatidylcholine.png",width =15,height = 5,dpi = 300 )
+
+ggsave(p,filename = "R figures/scMagSigPro/immune/Lysophosphatidylcholine.pdf",width =15,height = 5,dpi = 300 )
+
+
+## FeatureStatPlot to check fatty acid accumulation
+meta.seu$age<-factor(meta.seu$age,levels = c("young","old"))
+
+p<-FeatureStatPlot(meta.seu,group.by = "age",palette ="lancet",
+                stat.by = c("C18H29O3S","C19H15O4","C23H47NO7P"),
+                assay = "Metabolite",slot = "counts",
+                add_box = T,stack = T
+                )+
+  ggtitle("Dysfunctional Immune Response")+
+  theme(plot.title = element_text(face = "bold",hjust = 0.5,size = 14)
+        )
+
+ggsave(p,filename ="R figures/scMagSigPro/immune/Dysfunctional Immune Response.pdf",
+       height = 6,width = 6,dpi = 300)
+ggsave(p,filename ="R figures/scMagSigPro/immune/Dysfunctional Immune Response.png",
+       height = 6,width = 6,dpi = 300)
+
+```
+
+```{r,cell prob,include=FALSE}
+cell.prob<-t(integrated.xDbit@meta.data[,c(16:25)])
+cell.prob<-CreateAssayObject(data =cell.prob,min.cells = 0,min.features = 0 )
+integrated.xDbit[["cell.prob"]]<-cell.prob
+
+integrated.xDbit$age<-factor(integrated.xDbit$age,levels = c("young","old"))
+
+idx<-rownames(integrated.xDbit@assays$cell.prob)
+
+for (i in seq_along(idx)) {
+
+p<-FeatureStatPlot(integrated.xDbit,assay = "cell.prob",
+                slot = "data",stat.by = idx[i],add_box = T,
+                group.by = "liver.zonation",split.by = "age",
+                comparisons = list(c("young","old")),title = "",
+                multiplegroup_comparisons = T,palette = "lancet")+
+  ylab("Cell Probablity")+xlab("")+
+
+theme(axis.title.y = element_text(hjust = 0.5,
+                                  size = 14))
+
+ggsave(filename = paste0("R figures/scMagSigPro/immune/",idx[i],
+       " probablity.pdf"),width = 5,height = 4,dpi = 300)
+
+ggsave(filename = paste0("R figures/scMagSigPro/immune/",idx[i],
+       " probablity.png"),width = 5,height = 4,dpi = 300)
+  
+}
+```
+
+```{r,validation,include=FALSE}
+#load("H:/Celia group/xDbit(s4) project(renew)/paired scRNA.RData")
+
+CellDimPlot(pair.sc,reduction = "umap",group.by = "nuclei")
+
+pair.sc$Age<-factor(pair.sc$Age,levels = c("Young","Old"))
+pair.sc$nuclei<-factor(pair.sc$nuclei)
+
+p<-CellStatPlot(srt =pair.sc, stat.by = "nuclei", 
+                title = "Nuclei Proportion in Peter Tessarz",
+             group.by = "Age", label = TRUE,palette = "nejm")
+
+ggsave(p,filename = "R figures/scMagSigPro/immune/Nuclei Proportion in Peter Tessarz.pdf",width = 6,height = 5,dpi = 300)
+ggsave(p,filename = "R figures/scMagSigPro/immune/Nuclei Proportion in Peter Tessarz.png",width = 6,height = 5,dpi = 300)
+
+TMS.scRNA<-readRDS(file = "TMS scRNA.rds")
+
+p<-CellStatPlot(srt =TMS.scRNA, stat.by = "cell_type",
+                title = "Cell Proportion in TMS",
+             group.by = "age", label = TRUE,palette = "jama")
+
+ggsave(p,filename = "R figures/scMagSigPro/immune/Cell Proportion in TMS.pdf",width = 6,height = 5,dpi = 300)
+
+ggsave(p,filename = "R figures/scMagSigPro/immune/Cell Proportion in TMS.png",width = 6,height = 5,dpi = 300)
+
+```
+
+
+
+
+
+# Pathway Enrichment for scMagSigPro
+```{r}
+load("heatmap obj for scMagSigPro.RData")
+
+enrichment.res<-as.data.frame(ht[["enrichment"]][["enrichment"]])
+
+write.csv(enrichment.res,file = "R figures/scMagSigPro/GO_BP enrichment.csv")
+```
+
+```{r,plot,include=FALSE}
+enrichment.res<-ht[["enrichment"]]
+
+idx<-c(paste0("Cluster_",seq(1,6,1)))
+
+for (i in seq_along(idx)) {
+  pdf(file =paste0("R figures/scMagSigPro/GO_BP-",idx[i],".pdf"),
+      width = 15,height = 7.5)
+ print( EnrichmentPlot(res = enrichment.res,db = "GO_BP",
+                 plot_type = "network",
+                 group_use = idx[i])
+ )
+  
+  dev.off()
+  
+}
+
+
+for (i in seq_along(idx)) {
+  pdf(file =paste0("R figures/scMagSigPro/Reactome-",
+                   idx[i],".pdf"),
+      width = 15,height = 7.5)
+ print( EnrichmentPlot(res = enrichment.res,db = "Reactome",
+                 plot_type = "network",
+                 group_use = idx[i])
+ )
+  
+  dev.off()
+  
+}
+```
+
+
+
+# scMagSigPro at Rectome
+
+```{r,include=FALSE}
+DefaultAssay(integrated.xDbit)<-"Metabolism"
+xdbit.sce<-as.SingleCellExperiment(integrated.xDbit)
+```
+
+```{r,include=FALSE}
+xdbit.meta.mag.obj<-as_scmp(object = xdbit.sce,from = "sce",
+                       align_pseudotime = T,
+                       verbose = T,
+                       additional_params = list(labels_exist = TRUE,
+                                                exist_ptime_col = "PV.CV.Trajectory",
+                                                exist_path_col = "age"))
+
+xdbit.meta.mag.obj <- sc.squeeze(xdbit.meta.mag.obj)
+
+rm(xdbit.sce)
+```
+
+```{r,plot bin,include=FALSE}
+p<-plotBinTile(xdbit.meta.mag.obj)+
+  ggtitle("Binned Pseudotime by scMagSigPro")+
+  ylab("Group")+xlab("Binned Pseudotime ")+
+  scale_fill_viridis(name = "Bin Size")+
+  theme(plot.title = element_text(face = "bold",size = 14,hjust = 0.5),
+        axis.title =element_text(face = "bold",size = 12),
+        axis.text = element_text(size = 12))
+ggsave(p,filename = "R figures/scMagSigPro/pseudotime bins for metabolic.pdf",width = 6,height = 4,dpi = 300)
+ggsave(p,filename = "R figures/scMagSigPro/pseudotime bins for metabolic.png",width = 6,height = 4,dpi = 300)  
+```
+
+```{r,set degree,include=FALSE}
+xdbit.meta.mag.obj<- sc.set.poly(xdbit.meta.mag.obj, poly_degree =3)
+
+save(xdbit.meta.mag.obj,file ="scMagSigPro obj(metabolic).RData" )
+```
+
+```{r,run scMagSigPro,include=FALSE}
+# Detect non-flat profiles
+xdbit.meta.mag.obj <- sc.p.vector(xdbit.meta.mag.obj,
+                             offset = TRUE, 
+                             p_value = 0.05, 
+                             min_na = 10,
+                             verbose =T,
+                             log_offset = TRUE
+)
+
+# Model refinement
+
+xdbit.meta.mag.obj <- sc.t.fit(xdbit.meta.mag.obj, verbose = TRUE)
+
+save(xdbit.meta.mag.obj,file ="scMagSigPro obj(metabolic).RData" )
+```
+
+```{r,get sig gene,include=FALSE}
+xdbit.meta.mag.obj  <- sc.filter(
+  scmpObj = xdbit.meta.mag.obj ,
+  rsq = 0.7,
+  vars = "groups",
+  intercept = "dummy",
+  includeInflu = F
+)
+```
+
+
+```{r,cluster the sig scMagSigPro gene,include=FALSE}
+xdbit.meta.mag.obj <- sc.cluster.trend(
+ xdbit.meta.mag.obj ,
+  cluster_by = "counts",
+  geneSet = "union",
+  k =6
+)
+
+p<-plotTrendCluster(
+  scmpObj =xdbit.meta.mag.obj ,
+  plot = "counts",
+  logs = TRUE,
+  summary_mode='mean',
+  smoothness = 0.01,
+  verbose = FALSE,
+  lines = TRUE
+)
+
+p<-p+
+  ggtitle("Dynamical Reactome Pathway over PV-CV axis")+ylab("Binned Pseudobulk Expression")+
+  xlab("Pooled PV-CV Trajectory")+
+  theme(plot.title = element_text(face = "bold",size = 14,hjust = 0.5),
+        axis.text.x = element_text(angle = 0),
+        axis.title =element_text(face = "bold",size = 12),
+        axis.text = element_text(size = 12))
+
+
+ggsave(p,filename = "R figures/scMagSigPro/clustered scMagSigPro Sig Reactome pathway.png",width = 7,height = 5,dpi = 300) 
+ggsave(p,filename = "R figures/scMagSigPro/clustered scMagSigPro Sig Reactome pathway.pdf",width = 7,height = 5,dpi = 300) 
+```
+
+```{r,extract the sig genes}
+sig.mag.pathway<-as.data.frame( do.call(rbind,xdbit.meta.mag.obj@Significant@clusters))
+
+sig.mag.pathway$pathway=rownames(sig.mag.pathway)
+colnames(sig.mag.pathway)[1]<-"cluster"
+
+save(sig.mag.pathway,file = "sig scMagSigPro pathway.RData")
+write.csv(sig.mag.pathway,file = "sig scMagSigPro pathway.csv")
+```
+
+```{r,include=FALSE}
+integrated.xDbit <- RunDynamicFeatures(srt = integrated.xDbit, 
+                                       lineages = c("Young.Trajectory",                                                   "Old.Trajectory"),
+                                       features =sig.mag.pathway$pathway,assay = "Metabolism",
+                                       BPPARAM = BiocParallel::SnowParam(workers = 1))
+```
+
+```{r}
+cluster.gene<-paste0("Cluster_",sig.mag.pathway$cluster)
+names(cluster.gene)<-sig.mag.pathway$pathway
+
+ht <- DynamicHeatmap(
+  srt =integrated.xDbit, 
+  lineages = c("Young.Trajectory", "Old.Trajectory"),
+  use_fitted = TRUE,  reverse_ht = F,
+  pseudotime_label = F, 
+  nlabel = 0,
+  show_row_names = T,
+  feature_split = cluster.gene,
+  cluster_rows = TRUE,
+  min_expcells = 1,
+  r.sq = 0,
+  dev.expl = 0,
+  heatmap_palette = "turbo",
+  padjust = 1,pseudotime_palette = "plasma",
+  cell_annotation =c("age","liver.zonation"),
+  cell_annotation_palette = c("lancet","npg"),
+  topTerm =10,
+  label_size = 4,
+  height = 10, width = 2,
+  use_raster = T,
+  raster_by_magick = T,
+)
+pdf(file = "R figures/scMagSigPro/dynamics metabolic heatmap.pdf",width =16,height = 12)
+print(ht$plot)
+dev.off()
+
+save(integrated.xDbit,file = "filter data.Rdata")
+
+save(ht,file="heatmap obj for metabolic scMagSigPro.RData")
+```
+
+# Cell-type Decovolution(RCTD)
+
+## prepare the ref
+
+```{r,prepare the ref}
+dir.list<- "H:/Celia group/xDbit project/ref_data/rawData_mouseStSt/countTable_mouseStSt/"
+ 
+matrix <- as.matrix(readMM(file = paste0(dir.list,"matrix.mtx")))
+features <- as.vector(read.table(paste0(dir.list,"features.tsv")))
+barcodes <- as.vector(read.table(paste0(dir.list,"barcodes.tsv")))
+
+colnames(matrix)<-barcodes$V1
+rownames(matrix)<-features$V1
+
+ref.data<-CreateSeuratObject(matrix ,min.cells = 0,min.features = 0,project = "Ref") 
+ref.data$library<-"Ref"
+ 
+ 
+meta.dat<-read.csv(file = "H:/Celia group/xDbit project/ref_data/annot_mouseStStAll.csv",header = T )
+
+rownames(meta.dat)<-meta.dat$cell
+
+rm(matrix)
+
+ref.data<-AddMetaData(ref.data,metadata = meta.dat)
+
+umap.df<-as.data.frame(meta.dat[,c(1:2)])
+rownames(umap.df)<-meta.dat$cell
+
+ref.data[["umap"]]<- CreateDimReducObject(embeddings = as.matrix(umap.df), 
+                                           key = "UMAP_", 
+                                           assay = "RNA")
+
+save(ref.data,file = "scRNA ref data.RData")
+
+```
+
+
+```{r,check the ref,include=FALSE}
+ref.data$celltype<-ref.data$annot
+
+CellDimPlot(ref.data,group.by = "celltype",reduction = "umap",
+            label = T,
+            palette = "Set1")+
+  ggtitle("Reference(scRNA)")+
+      theme(plot.title = element_text( hjust = 0.7,face = "bold",size = 20))
+ggsave(filename = "H:/Celia group/xDbit(s4) project(renew)/R figures/RCTD/Dimplot for ref scRNA.pdf",dpi = 150,width = 8,height = 6)
+ggsave(filename = "H:/Celia group/xDbit(s4) project(renew)/R figures/RCTD/Dimplot for ref scRNA.png",dpi = 150,width = 8,height = 6)
+```
+
+## re-annotation
+
+```{r}
+Idents(ref.data)<-"annot"
+ref.data<- RenameIdents(ref.data, 
+                        'pDCs' = 'Immune',
+                        'T cells' = 'Immune', 
+                        'Monocytes & Monocyte-derived cells' = 'Immune',
+                        'ILC1s' = 'Immune', 
+                        'B cells' = 'Immune',
+                        'cDC2s' = 'Immune', 
+                        'NK cells' = 'Immune',
+                        'Neutrophils' = 'Immune', 
+                        'Mig. cDCs' = 'Immune',
+                        'cDC1s' = 'Immune', 
+                        'Basophils' = 'Immune')
+ref.data$main.celltype<-ref.data@active.ident
+
+Idents(ref.data)<-"main.celltype"
+
+hep<-subset(ref.data,idents="Hepatocytes")
+
+
+VlnPlot(hep,features =c("Cyp2f2","Cyp2e1","Glul","Hamp","Igfbp2","Adh1b","Adh4","Gsta1","Adh1c"),group.by ="sub.cluster",stack = T,sort = T,flip = T)
+
+
+Idents(ref.data)<-"sub.cluster"
+
+ref.data<-RenameIdents(ref.data, 
+                        "Hepatocytes_13" = "Hepatocytes_0",
+                        "Hepatocytes_8" = "Hepatocytes_0", 
+                        "Hepatocytes_14" = "Hepatocytes_1",
+                        "Hepatocytes_5"= "Hepatocytes_2", 
+                        "Hepatocytes_10" = "Hepatocytes_2",
+                        "Hepatocytes_9" = "Hepatocytes_2", 
+                       "Hepatocytes_11" = "Hepatocytes_2",
+                        "Hepatocytes_12" = "Hepatocytes_2", 
+                        "Hepatocytes_6" = "Hepatocytes_3",
+                        "Hepatocytes_7" = "Hepatocytes_3", 
+                        "Hepatocytes_15" = "Hepatocytes_4" )
+ref.data$sub.cluster<-ref.data@active.ident
+
+
+
+Idents(hep)<-"sub.cluster"
+
+hep<-RenameIdents(hep, 
+                        "Hepatocytes_13" = "Hepatocytes_0",
+                        "Hepatocytes_8" = "Hepatocytes_0", 
+                        "Hepatocytes_14" = "Hepatocytes_1",
+                        "Hepatocytes_5"= "Hepatocytes_2", 
+                        "Hepatocytes_10" = "Hepatocytes_2",
+                        "Hepatocytes_9" = "Hepatocytes_2", 
+                       "Hepatocytes_11" = "Hepatocytes_2",
+                        "Hepatocytes_12" = "Hepatocytes_2", 
+                        "Hepatocytes_6" = "Hepatocytes_3",
+                        "Hepatocytes_7" = "Hepatocytes_3", 
+                        "Hepatocytes_15" = "Hepatocytes_4" )
+hep$sub.cluster<-hep@active.ident
+
+
+VlnPlot(hep,features =c("Cyp2f2","Acly","Asl","Uox",
+                        "Hamp","Igfbp2",
+                        "Cyp2e1","Glul","Cyp1a2","Cyp27a1",
+                        "Gsta3","Ugt1a1"),
+        group.by ="sub.cluster",stack = T,sort = T,flip = T)
+
+Idents(ref.data)<-"sub.cluster"
+
+ref.data<-RenameIdents(ref.data, 
+                        "Hepatocytes_3" = "Hepatocytes_1",
+                        "Hepatocytes_4" = "Hepatocytes_1" 
+                        )
+ref.data$sub.cluster<-ref.data@active.ident
+
+Idents(hep)<-"sub.cluster"
+
+hep<-RenameIdents(hep, 
+                        "Hepatocytes_3" = "Hepatocytes_1",
+                        "Hepatocytes_4" = "Hepatocytes_1" 
+                        )
+hep$sub.cluster<-hep@active.ident
+
+hep$sub.cluster<-as.character(hep$sub.cluster)
+
+
+p<-CellDimPlot(hep,group.by = "sub.cluster",split.by = "sub.cluster" ,
+            reduction = "umap",ncol = 1,
+            label = T,raster = F,
+            palette = "Set1")
+ggsave(p,filename = "tmp3.pdf",height = 20,width = 7,units = "in")
+FeatureDimPlot(hep,features ="Cyp2f2" ,reduction = "umap",palette = "Reds")
+FeatureDimPlot(hep,features ="Hamp" ,reduction = "umap",palette = "Reds")
+FeatureDimPlot(hep,features ="Cyp2e1",reduction = "umap",palette = "Reds")
+
+
+VlnPlot(hep,features =c("Cyp2f2","Acly","Asl","Uox",
+                        "Hamp","Igfbp2",
+                        "Cyp2e1","Glul","Cyp1a2","Cyp27a1",
+               "Gsta3","Ugt1a1"),group.by ="sub.cluster",stack = T,sort = T,flip = T)
+ggsave("tmp5.pdf",width = 5,height = 12)
+
+
+hep<-RunDM(hep,reduction = "pca",dims = 1:10)
+
+CellDimPlot(hep,group.by = "sub.cluster",reduction = "dm",
+            label = T,
+            palette = "Set1")
+ggsave(filename = "tmp6.pdf",width = 8)
+
+
+Idents(ref.data)<-"sub.cluster"
+
+ref.data<-RenameIdents(ref.data, 
+                        "Hepatocytes_0" = "Hepatocytes.CV",
+                        "Hepatocytes_1" = "Hepatocytes.PV",
+                        "Hepatocytes_2" = "Hepatocytes.CV" 
+                        )
+ref.data$sub.cluster<-ref.data@active.ident
+
+Idents(hep)<-"sub.cluster"
+
+hep<-RenameIdents(hep, 
+                        "Hepatocytes_0" = "Hepatocytes.CV",
+                        "Hepatocytes_1" = "Hepatocytes.PV",
+                        "Hepatocytes_2" = "Hepatocytes.CV" 
+                        )
+hep$sub.cluster<-hep@active.ident
+
+hep$sub.cluster<-as.character(hep$sub.cluster)
+
+ref.data$main.celltype<-as.character(ref.data$sub.cluster)
+hep$main.celltype<-as.character(hep$sub.cluster)
+
+CellDimPlot(ref.data,group.by = "main.celltype",reduction = "umap",
+            label = T,
+            palette = "Set1")+
+  ggtitle("Reference(revised annotation)")+
+      theme(plot.title = element_text( hjust = 0.7,face = "bold",size = 20))
+ggsave(filename = "H:/Celia group/xDbit project/R figures/RCTD/Dimplot for ref scRNA(revised).pdf",dpi = 150,width = 8,height = 6)
+ggsave(filename = "H:/Celia group/xDbit project/R figures/RCTD/Dimplot for ref scRNA(revised).png",dpi = 150,width = 8,height = 6)
+
+
+CellDimPlot(hep,group.by = "main.celltype",reduction = "umap",
+            label = T,theme_use = "theme_blank",
+            palette = "Set1")
+ggsave(filename = "H:/Celia group/xDbit project/R figures/RCTD/Dimplot for ref scRNA(revised)-Hepatocyte.pdf",dpi = 150,width = 8,height = 6)
+ggsave(filename = "H:/Celia group/xDbit project/R figures/RCTD/Dimplot for ref scRNA(revised)-Hepatocyte.png",dpi = 150,width = 8,height = 6)
+
+feature<-c(c("Cyp2f2","Acly","Asl","Uox",
+              "Hamp","Igfbp2",
+              "Cyp2e1","Glul","Cyp1a2","Cyp27a1","Gsta3"))
+
+VlnPlot(hep,features =feature,group.by ="main.celltype",stack = T,
+        sort = F,flip = T)
+ggsave("H:/Celia group/xDbit project/R figures/RCTD/Vlnplot for ref scRNA(revised)-Hepatocyte.png",width = 6,height = 12)
+
+ggsave("H:/Celia group/xDbit project/R figures/RCTD/Vlnplot for ref scRNA(revised)-Hepatocyte.pdf",width = 6,height = 12)
+
+save(ref.data,file = "scRNA ref data.RData")
+
+```
+
+
+
+
+## prepare the input for RCTD
+
+```{r,include=FALSE}
+## query
+
+load("H:/Celia group/xDbit(s4) project(renew)/filter data.RData")
+
+counts<-integrated.xDbit@assays$RNA@counts
+
+coords<-integrated.xDbit@reductions[["spatial"]]@cell.embeddings
+
+colnames(coords) <- c("x", "y")
+
+coords[is.na(colnames(coords))] <- NULL
+
+coords<-as.data.frame(coords)
+
+query<-SpatialRNA(coords = coords,counts = counts,colSums(counts))
+
+rm(coords,counts,integrated.xDbit)
+
+## reference
+
+load("H:/Celia group/xDbit(s4) project(renew)/scRNA ref data.RData")
+
+Idents(ref.data)<-"main.celltype"
+
+counts <- ref.data@assays$RNA@counts
+
+cluster <- as.factor(ref.data$main.celltype)
+
+names(cluster) <- colnames(ref.data)
+
+nUMI <- ref.data$nCount_RNA
+
+names(nUMI) <- colnames(ref.data)
+
+reference <- Reference(counts, cluster, nUMI,n_max_cells =50000)
+
+save(query,reference,file = "RCTD input.RData")
+
+```
+
+## Run RCTD
+
+```{r,run RCTD,include=FALSE}
+# full mode
+rm(list=ls())
+
+gc()
+
+load("H:/Celia group/xDbit(s4) project(renew)/RCTD input.RData")
+
+RCTD <- create.RCTD(query, reference, max_cores = 8)
+
+rm(query,reference)
+
+gc()
+
+RCTD <- run.RCTD(RCTD, doublet_mode = 'full')
+
+save(RCTD,file = "RCTD output(full).RData")
+
+```
+## Check the results and put back to spatial obj
+
+```{r,multi mode,include=FALSE}
+load("H:/Celia group/xDbit(s4) project(renew)/RCTD output(full).RData")
+
+barcodes <- colnames(RCTD@spatialRNA@counts)
+
+weights <- RCTD@results$weights
+
+norm_weights <- normalize_weights(weights)
+
+cell_types <-RCTD@cell_type_info[["info"]][[2]]
+
+decov.res<-as.data.frame(norm_weights[,cell_types])
+
+integrated.xDbit<-AddMetaData(integrated.xDbit,metadata = decov.res,
+                              col.name = colnames(decov.res))
+
+integrated.xDbit@misc$decov.full.res<-decov.res
+
+
+save(integrated.xDbit,file = "filter data.Rdata")
+
+write.csv(decov.res,file = "cell-type decov res.csv")
+
+```
+
+```{r,add ct decov assay,include=FALSE}
+ct.deconv.assay <-CreateAssayObject(data = as.matrix(t(decov.res)),
+                              min.cells = 0,min.features = 0)
+
+integrated.xDbit[["ctDeconv"]]<-ct.deconv.assay
+
+DefaultAssay(integrated.xDbit)<-"ctDeconv"
+
+all.features<-rownames(integrated.xDbit@assays$ctDeconv@data)
+
+integrated.xDbit<-ScaleData(integrated.xDbit,assay = "ctDeconv",
+                            features = all.features)
+
+integrated.xDbit<-RunPCA(integrated.xDbit,assay ="ctDeconv",
+                         features = all.features,
+                         reduction.name ="ctDeconvPCA",
+                          reduction.key = "ctDeconvPCA_")
+
+integrated.xDbit<-RunUMAP(integrated.xDbit,reduction ="ctDeconvPCA",
+                          dims = 1:5,n.neighbors=100L,min.dist=0.001,
+                          reduction.name = "ctDeconvUMAP",
+                          reduction.key = "ctDeconvUMAP_")
+
+CellDimPlot(integrated.xDbit,group.by = "age",reduction = "ctDeconvPCA")
+CellDimPlot(integrated.xDbit,group.by = "age",reduction = "ctDeconvUMAP")
+```
+```{r,heatmap for ct deconv,include=FALSE}
+pdf(file = "ct deconv.pdf",width = 6,height = 5)
+GroupHeatmap(integrated.xDbit,assay ="ctDeconv",exp_method ="zscore",
+             slot = "data",features = all.features,group.by = c("liver.zonation"),split.by = c("age"))
+dev.off()
+```
+
+
+## Visualization for full mode
+
+```{r}
+spatial.list<-SplitObject(integrated.xDbit,split.by = "id")
+```
+
+```{r,piechart in spatial,include=FALSE}
+source("DbPie.R")
+
+color.vec<-c(brewer.pal(8,"Set3"))
+
+for (i in 1:length(spatial.list)) {
+  
+  tmp<-spatial.list[[i]]
+  
+  m <- as.matrix(tmp@meta.data[,c(16:23)])
+  p <- tmp@reductions[["spatial"]]@cell.embeddings
+  colnames(p)<-c("x","y")
+  
+  r<-if_else(grepl("37_30",unique(tmp$id)),true = 100,false = 150)
+  
+  p1<-Db.pie(m,p,color.vec,r = r)+
+      ggtitle(unique(tmp$id))+
+      theme(plot.background = element_rect(fill = "black", color = "black"),
+            panel.background = element_rect(fill = "black", color = "black"),
+            plot.margin = unit(c(1,1,1,1), "lines"), 
+            panel.grid.major = element_blank(), 
+            panel.grid.minor = element_blank(),
+            text = element_text(color = "white"),
+            axis.title.x = element_blank(), 
+            axis.title.y = element_blank(),  
+            axis.text.x = element_blank(),  
+            axis.text.y = element_blank(),   
+            axis.ticks = element_blank() ,
+            legend.background = element_rect(fill = "black", color = "black"),
+            legend.title = element_text(color = "white",size = 20,face = "bold"), 
+            legend.text = element_text(color = "white",size = 18), 
+            legend.key.size = unit(3, "cm"),  
+            plot.title = element_text(color = "white", hjust = 0.5,
+                                      face = "bold",size = 40))+
+      theme(aspect.ratio = 1)
+  
+  
+
+ggsave(p1,filename =paste0("H:/Celia group/xDbit(s4) project(renew)/R figures/RCTD/PieChart-celltype deconv-",unique(tmp$id),".pdf" ),
+                            width = 25,height = 25,units = "in",dpi = 150)
+ggsave(p1,filename =paste0("H:/Celia group/xDbit(s4) project(renew)/R figures/RCTD/PieChart-celltype deconv-",unique(tmp$id),".png" ),
+                            width = 25,height = 25,units = "in",dpi = 150)
+
+rm(tmp,m,p,p1)
+
+}
+
+```
+
+
+# nuclei Decovolution(RCTD)
+## prepare the input for RCTD
+
+```{r,include=FALSE}
+## query
+
+load("H:/Celia group/xDbit(s4) project(renew)/filter data.RData")
+
+counts<-integrated.xDbit@assays$RNA@counts
+
+coords<-integrated.xDbit@reductions[["spatial"]]@cell.embeddings
+
+colnames(coords) <- c("x", "y")
+
+coords[is.na(colnames(coords))] <- NULL
+
+coords<-as.data.frame(coords)
+
+query<-SpatialRNA(coords = coords,counts = counts,colSums(counts))
+
+rm(coords,counts,integrated.xDbit)
+
+## reference
+
+load("H:/Celia group/xDbit(s4) project(renew)/paired scRNA.RData")
+
+Idents(pair.sc)<-"nuclei"
+
+pair.sc<-subset(pair.sc,idents=c("2n" ,"4n"))
+
+counts <- pair.sc@assays$RNA@counts
+
+cluster <- as.factor(pair.sc$nuclei)
+
+names(cluster) <- colnames(pair.sc)
+
+nUMI <- pair.sc$nCount_RNA
+
+names(nUMI) <- colnames(pair.sc)
+
+reference <- Reference(counts, cluster, nUMI,n_max_cells =50000)
+
+save(query,reference,file = "RCTD input(nuclei).RData")
+
+```
+## Run RCTD
+```{r,run RCTD,include=FALSE}
+# full mode
+rm(list=ls())
+
+gc()
+
+load("RCTD input(nuclei).RData")
+
+RCTD <- create.RCTD(query, reference, max_cores = 8)
+
+rm(query,reference)
+
+gc()
+
+RCTD <- run.RCTD(RCTD, doublet_mode = 'full')
+
+save(RCTD,file = "RCTD nuclei output(full).RData")
+
+```
+## Check the results and put back to spatial obj
+
+```{r,multi mode,include=FALSE}
+load("RCTD nuclei output(full).RData")
+
+barcodes <- colnames(RCTD@spatialRNA@counts)
+
+weights <- RCTD@results$weights
+
+norm_weights <- normalize_weights(weights)
+
+cell_types <-RCTD@cell_type_info[["info"]][[2]]
+
+nuclei.decov.res<-as.data.frame(norm_weights[,cell_types])
+
+colnames(nuclei.decov.res)<-c("nuclei.2n","nuclei.4n")
+
+integrated.xDbit<-AddMetaData(integrated.xDbit,
+                              metadata = nuclei.decov.res,
+                              col.name = colnames(nuclei.decov.res))
+
+integrated.xDbit@misc$decov.nuclei.res<-nuclei.decov.res
+
+
+save(integrated.xDbit,file = "filter data.Rdata")
+
+write.csv(nuclei.decov.res,file = "nuclei decov res.csv")
+
+```
+
+```{r,add nuc decov assay,include=FALSE}
+nuc.deconv.assay <-CreateAssayObject(data = as.matrix(t(nuclei.decov.res)),
+                              min.cells = 0,min.features = 0)
+
+integrated.xDbit[["nucDeconv"]]<-nuc.deconv.assay
+
+DefaultAssay(integrated.xDbit)<-"nucDeconv"
+
+all.features<-rownames(integrated.xDbit@assays$nucDeconv@data)
+
+integrated.xDbit<-ScaleData(integrated.xDbit,assay = "nucDeconv",
+                            features = all.features)
+
+colnames(nuclei.decov.res)<-c("Ploidy_1","Ploidy_2")
+
+rna.embeding <- CreateDimReducObject(
+  embeddings =as.matrix(nuclei.decov.res),
+  assay = "RNA",
+  key = "Ploidy_")
+
+integrated.xDbit[['ploidy']] <- rna.embeding
+
+
+save(integrated.xDbit,file = "filter data.Rdata")
+```
+
+```{r}
+FeatureDimPlot(integrated.xDbit,feature = "nuclei.2n",reduction = "umap")
+CellDimPlot(integrated.xDbit,group.by = "liver.zonation",reduction = "ploidy",pt.size = 1.2)
+```
+
+
+
+
+
+
+

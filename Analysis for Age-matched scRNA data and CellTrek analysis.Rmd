@@ -1,0 +1,1182 @@
+---
+title: "Paired scRNA analysis"
+author: "Liwei"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+#env setting
+
+```{r,R enviroment activiation,include=FALSE}
+renv::activate(project = "~/my_SCP_env")
+```
+
+```{r,include=FALSE}
+library(SCP)
+library(ggpubr)
+library(future)
+library(Seurat)
+library(Matrix)
+library(dplyr)
+library(AnnotationHub)
+library(future)
+library(future.apply)
+library(ggplot2)
+library(gtools)
+library(scatterpie)
+library(harmony)
+library(UCell)
+library(tidyr)
+library(dplyr)
+library(RColorBrewer)
+library(BASS)
+library(Lamian)
+library(GeneTrajectory)
+library(ggVolcano)
+library(ggvenn)
+library(eulerr)
+library(Hmisc)
+library(scMetabolism)
+library(ggplot2)
+library(rsvd)
+library(psupertime)
+library(ggnewscale)
+library(UpSetR)
+library(spacexr)
+library(tidyverse)
+library(clusterProfiler)
+library(STdeconvolve)
+library(SONAR)
+library(EnrichedHeatmap)
+library(circlize)
+library(CellChat)
+library(patchwork)
+#library(BioEnricher)
+library(SPATAwrappers)
+library(SPATA2)
+library(png)
+library(CellTrek)
+```
+
+# Celltrek for Tessarz's scRNA(ploidy)
+
+## load the data and create seu obj
+
+```{r}
+count<-read.table(file = "YoungOld_Liver_tissue_countmatrix.txt")
+meta<-read.table(file = "YoungOld_Liver_tissue_annotation.txt")
+
+pair.sc<-CreateSeuratObject(counts = count,meta.data = meta)
+```
+
+## QC
+
+```{r,include=FALSE}
+pair.sc$batch<-paste0(pair.sc$Age,".R",pair.sc$Replicate,".",pair.sc$nuclei)
+
+pair.sc$batch<-as.factor(pair.sc$batch)
+
+pair.sc$Complexity<-pair.sc$nFeature_RNA/pair.sc$nCount_RNA
+
+FeatureStatPlot(pair.sc, stat.by = "nFeature_RNA", group.by = "batch", add_box = TRUE,
+                palette = "Paired")
+
+FeatureStatPlot(pair.sc, stat.by = "nCount_RNA", group.by = "batch", add_box = TRUE,
+                palette = "Paired")
+
+FeatureStatPlot(pair.sc, stat.by = "Complexity", group.by = "batch", add_box = TRUE,
+                palette = "Paired")
+
+pair.sc<- subset(pair.sc,subset = nFeature_RNA > 200 &  nCount_RNA>1000)
+
+
+Idents(pair.sc)<-"celltype"
+
+pair.sc<- subset(pair.sc,idents=c( "Pericentral_hepatocytes" ,"Periportal_hepatocytes"))
+```
+
+
+## preprocess and integration
+
+### preprocess
+
+```{r,include=FALSE}
+pair.sc <- NormalizeData(pair.sc,
+                          normalization.method = "LogNormalize")
+
+pair.sc <- FindVariableFeatures(pair.sc, 
+                                 selection.method = "vst",
+                                 nfeatures = 2000)
+
+pair.sc<- ScaleData(pair.sc,verbose = F)
+
+pair.sc<- RunPCA(pair.sc , npcs = 50, verbose = FALSE)
+```
+
+### integration
+
+```{r,include=FALSE}
+pair.sc$batch<-paste0(pair.sc$Age,".R",pair.sc$Replicate)
+
+set.seed(123456)
+
+
+pair.sc<-RunHarmony(pair.sc,group.by.vars = "batch",reduction = "pca",
+                           dims.use = 1:12,
+                          plot_convergence=T)
+```
+
+### run umap
+```{r,include=FALSE}
+ElbowPlot(pair.sc,reduction = "harmony")
+ElbowPlot(pair.sc,reduction = "pca")
+
+pair.sc<- RunUMAP(pair.sc, dims = 1:9,
+                    n.neighbors = 30L,
+                    min.dist = 0.2,reduction = "harmony")
+
+pair.sc<- FindNeighbors(pair.sc, dims = 1:30,reduction = "harmony")
+```
+
+```{r}
+CellDimPlot(pair.sc,group.by = "nuclei",pt.size = 2)
+CellDimPlot(pair.sc,group.by = "celltype",pt.size = 2)
+CellDimPlot(pair.sc,group.by = "batch",pt.size = 2)
+CellDimPlot(pair.sc,group.by = "Age",pt.size = 2)
+```
+
+```{r}
+save(pair.sc,file = "paired scRNA.RData")
+```
+
+### CellTrek
+```{r,load sc and st}
+load("H:/Celia group/xDbit(s4) project(renew)/paired scRNA.RData")
+load("H:/Celia group/xDbit(s4) project(renew)/filter data.RData")
+```
+
+```{r,extract one slide for young and old,include=FALSE}
+Idents(integrated.xDbit)<-"id"
+y.st<-subset(integrated.xDbit,idents="37_43_C1")
+o.st<-subset(integrated.xDbit,idents="37_43_A2")
+
+rm(integrated.xDbit)
+
+gc()
+
+y.st <-y.st %>% NormalizeData(normalization.method = "LogNormalize")%>%
+ FindVariableFeatures(selection.method = "vst",
+                      nfeatures = 2000)%>%
+ ScaleData(verbose = F)
+
+o.st<-o.st %>% NormalizeData(normalization.method = "LogNormalize")%>%
+ FindVariableFeatures(selection.method = "vst",
+                      nfeatures = 2000)%>%
+ ScaleData(verbose = F)
+
+# add coordinate metadata
+y.st$imagerow<-as.data.frame(y.st@reductions[["spatial"]]@cell.embeddings)$spatial_1
+y.st$imagecol<-as.data.frame(y.st@reductions[["spatial"]]@cell.embeddings)$spatial_2
+y.st$cell.name<-colnames(y.st)
+
+o.st$imagerow<-as.data.frame(o.st@reductions[["spatial"]]@cell.embeddings)$spatial_1
+o.st$imagecol<-as.data.frame(o.st@reductions[["spatial"]]@cell.embeddings)$spatial_2
+
+
+
+o.st$cell.name<-colnames(o.st)
+
+y.st$cell.name<-colnames(y.st)
+
+
+# add image
+a2.scale<-read.csv(file = "37_43_A2-dapi_scalefactors.csv")
+c1.scale<-read.csv(file = "37_43_C1-dapi_scalefactors.csv")
+        
+a2.hires<-readPNG(source = "37_43_A2-dapi_hires.png")
+a2.lowres<-readPNG(source = "37_43_A2-dapi_lowres.png")
+c1.hires<-readPNG(source = "37_43_C1-dapi_hires.png")
+c1.lowres<-readPNG(source = "37_43_C1-dapi_lowres.png")
+
+
+a2.scale.1 <- Seurat::scalefactors(
+  spot = a2.scale$spot_diameter_fullres,
+  fiducial = NA_real_,  
+  hires = a2.scale$tissue_hires_scalef,
+  lowres = a2.scale$tissue_lowres_scalef
+)
+
+cood<-as.data.frame( o.st@reductions$spatial@cell.embeddings)
+colnames(cood)<-c("imagecol","imagerow" )
+
+a2.img <- new(
+  Class = 'VisiumV1',
+  image = a2.lowres,
+  scale.factors =a2.scale.1, 
+  coordinates =cood, 
+  spot.radius = a2.scale$spot_diameter_fullres 
+)
+
+rm(a2.hires,a2.lowres,a2.scale,a2.scale.1,cood)
+
+c1.scale.1 <- Seurat::scalefactors(
+  spot = c1.scale$spot_diameter_fullres,
+  fiducial = NA_real_,  
+  hires = c1.scale$tissue_hires_scalef,
+  lowres = c1.scale$tissue_lowres_scalef
+)
+
+cood<-as.data.frame( y.st@reductions$spatial@cell.embeddings)
+colnames(cood)<-c( "imagecol","imagerow" )
+
+c1.img <- new(
+  Class = 'VisiumV1',
+  image = c1.lowres,
+  scale.factors =c1.scale.1, 
+  coordinates =cood, 
+  spot.radius = c1.scale$spot_diameter_fullres 
+)
+
+rm(c1.hires,c1.lowres,c1.scale,c1.scale.1)
+
+ 
+
+o.st@images <- list("37_43_A2" = a2.img)
+y.st@images <- list("37_43_C1" = c1.img)
+
+rm(a2.img, c1.img,cood)
+
+o.st@assays$RNA@key<-"spatial_"
+y.st@assays$RNA@key<-"spatial_"
+
+o.st@images$`37_43_A2`@key<-"spatial_"
+y.st@images$`37_43_C1`@key<-"spatial_"
+
+o.st@images$`37_43_A2`@assay<-"RNA"
+y.st@images$`37_43_C1`@assay<-"RNA"
+
+
+gc()
+```
+
+
+```{r,slice the sc data,include=FALSE}
+Idents(pair.sc)<-"Age"
+y.sc<-subset(pair.sc,idents="Young")%>% NormalizeData(normalization.method = "LogNormalize")%>%
+ FindVariableFeatures(selection.method = "vst",
+                      nfeatures = 2000)%>%
+ ScaleData(verbose = F)
+
+
+
+o.sc<-subset(pair.sc,idents="Old")%>% NormalizeData(normalization.method = "LogNormalize")%>%
+ FindVariableFeatures(selection.method = "vst",
+                      nfeatures = 2000)%>%
+ ScaleData(verbose = F)
+
+y.sc$cell.name<-colnames(y.sc)
+o.sc$cell.name<-colnames(o.sc)
+
+rm(pair.sc)
+```
+
+
+```{r,co-embedding,include=FALSE}
+y.train <- CellTrek::traint(st_data=y.st, sc_data=y.sc, 
+                            sc_assay='RNA',
+                            coord_xy=c("imagerow" , "imagecol"),
+                            st_assay ='RNA', 
+                            cell_names='nuclei')
+
+
+o.train <- CellTrek::traint(st_data=o.st, 
+                            sc_data=o.sc,
+                            sc_assay = "RNA",
+                            st_assay = "RNA",
+                            
+                            coord_xy=c("imagerow" , "imagecol"),
+                          
+                            cell_names='nuclei')
+
+save.image(file = "CellTrek output.RData")
+```
+
+
+```{r,cell charting,include=FALSE}
+y.ck <- CellTrek::celltrek(st_sc_int=y.train,
+                           int_assay='traint', 
+                           sc_data=y.sc, 
+                           sc_assay = 'RNA',
+                           reduction='pca', 
+                           intp=T,
+                           intp_pnt=1000, 
+                           intp_lin=F, 
+                           nPCs=10, 
+                           ntree=1000, 
+                           dist_thresh=0.55, 
+                           top_spot=20, 
+                           spot_n=20, 
+                           repel_r=5, 
+                           repel_iter=10, 
+                           keep_model=F)$celltrek
+
+o.ck <- CellTrek::celltrek(st_sc_int=o.train,
+                           int_assay='traint', 
+                           sc_data=o.sc, 
+                           sc_assay = 'RNA',
+                           reduction='pca', 
+                           intp=T,
+                           intp_pnt=1000, 
+                           intp_lin=F, 
+                           nPCs=10, 
+                           ntree=1000, 
+                           dist_thresh=0.55, 
+                          top_spot=20, 
+                           spot_n=20, 
+                           repel_r=5, 
+                           repel_iter=10, 
+                           keep_model=F)$celltrek
+save(y.ck,o.ck,file = "CellTrek res.RData")
+```
+
+```{r,adjust the coordinate,include=FALSE}
+o.ck@reductions[["celltrek_raw"]]@cell.embeddings[,2]<-scale(o.ck@reductions[["celltrek_raw"]]@cell.embeddings[,2],center = F,scale = -1)[,1]
+
+o.ck@reductions[["celltrek"]]@cell.embeddings[,2]<-scale(o.ck@reductions[["celltrek"]]@cell.embeddings[,2],center = F,scale = -1)[,1]
+
+y.ck@reductions[["celltrek_raw"]]@cell.embeddings[,2]<-scale(y.ck@reductions[["celltrek_raw"]]@cell.embeddings[,2],center = F,scale = -1)[,1]
+
+y.ck@reductions[["celltrek"]]@cell.embeddings[,2]<-scale(y.ck@reductions[["celltrek"]]@cell.embeddings[,2],center = F,scale = -1)[,1]
+
+save(y.ck,o.ck,file = "CellTrek res.RData")
+```
+
+
+### label transfer 
+
+```{r,label transfer,include=FALSE}
+## old mice
+feature.indx<-rownames(o.train@assays[["traint"]]@data)
+
+
+o.ck <- RunKNNPredict(
+  srt_query = o.ck, srt_ref = o.st,
+  ref_group = "liver.zonation", features = feature.indx
+)
+
+o.ck$liver.zonation<- o.ck$KNNPredict_classification
+
+o.ck$liver.zonation<-factor(o.ck$liver.zonation,levels = c("PV","Mid","CV"))
+
+## young mice
+
+feature.indx<-rownames(y.train@assays[["traint"]]@data)
+
+
+y.ck <- RunKNNPredict(
+  srt_query = y.ck, srt_ref = y.st,
+  ref_group = "liver.zonation", features = feature.indx
+)
+
+y.ck$liver.zonation<- y.ck$KNNPredict_classification
+
+y.ck$liver.zonation<-factor(y.ck$liver.zonation,levels = c("PV","Mid","CV"))
+
+```
+
+### puspertime to rank the zonation
+
+```{r,write a normalization function}
+normalize.trajectory <- function(x) {
+  # Normalize x to [0, 1]
+  normalized_x = (x - min(x)) / (max(x) - min(x))
+  
+  # Scale to [-1, 1]
+  scaled_x = normalized_x * 2 - 1
+  
+  return(scaled_x)
+}
+```
+
+```{r,run psupertime,include=FALSE}
+y.ck$id<-"Young"
+o.ck$id<-"Old"
+
+slice.list<-list(y.ck,o.ck)
+names(slice.list)<-c("young","old")
+
+trajectory.order.list<-list()
+
+psuper.obj.list<-list()
+
+set.seed(53144)
+
+for (i in 1:length(slice.list)) {
+
+
+tmp<-slice.list[[i]]
+
+# normalize the data
+
+DefaultAssay(tmp)<-"RNA"
+
+
+tmp<- FindVariableFeatures(tmp,selection.method = "vst",
+                              nfeatures = 2000)
+
+tmp<- ScaleData(tmp,vars.to.regress =c("nFeature_RNA","nCount_RNA"),verbose = F)
+
+tmp<-as.SingleCellExperiment(tmp)
+
+# Run psupertime
+
+y=factor(tmp$liver.zonation,levels=c("PV","Mid","CV"))
+
+set.seed(53144)
+
+psuper_obj  = psupertime(tmp, y,n_folds = 10,min_expression =0.1,
+                         sel_genes = "all",
+                         score = "xentropy",test_propn=0.3)
+
+psuper_obj$proj_dt$psuper<-normalize.trajectory(psuper_obj$proj_dt$psuper)
+psuper_obj$cuts_dt[,1]<-NA
+
+plot_labels_over_psupertime(psuper_obj, 
+                            label_name='liver.zonation',
+                            palette = "Set2")+
+  xlab("PV-CV Trajectory")+xlim(-1.5,1.5)+
+  ggtitle(tmp$id)+
+  theme(plot.title = element_text(hjust = 0.5, 
+                                  vjust = 1,
+                                  size = 20, 
+                                  face = "bold"),
+    axis.title.x = element_text(face = "bold", size = 15), 
+    axis.title.y = element_text(face = "bold", size = 15))
+
+ggsave(filename =paste0("R figures/celltrek/celltrek nuclei/psupertime/Density plot-",unique(tmp$id),".pdf"),dpi = 150,height = 4,width = 6)
+
+ggsave(filename =paste0("R figures/celltrek/celltrek nuclei/psupertime/Density plot-",unique(tmp$id),".png"),dpi = 150,height = 4,width = 6)
+
+plot_identified_gene_coefficients(psuper_obj)+
+  ggtitle(tmp$id)+xlab("")+
+  theme(plot.title = element_text(hjust = 0.5, 
+                                  vjust = 1, 
+                                  size = 20, 
+                                  face = "bold"),
+        axis.title.y = element_text(face = "bold", size = 15))
+
+ggsave(filename =paste0("R figures/celltrek/celltrek nuclei/psupertime/Gene Coefficience-",unique(tmp$id),".pdf"),dpi = 150,height = 4,width = 6)
+
+ggsave(filename =paste0("R figures/celltrek/celltrek nuclei/psupertime/Gene Coefficience-",unique(tmp$id),".png"),dpi = 150,height = 4,width = 6)
+
+
+plot_identified_genes_over_psupertime(psuper_obj, 
+                                      label_name='liver.zonation',
+                                      palette = "Set2")+
+  ylab("PV-CV Trajectory")+
+  ggtitle(tmp$id)+
+  theme(plot.title = element_text(hjust = 0.5, 
+                                  vjust = 1, 
+                                  size = 20, 
+                                  face = "bold"),
+    axis.title.x = element_text(face = "bold", size = 15), 
+    axis.title.y = element_text(face = "bold", size = 15))
+
+ggsave(filename =paste0("R figures/celltrek/celltrek nuclei/psupertime/Feature Trajectory plot-",unique(tmp$id),".pdf"),dpi = 150,height = 6,width = 8)
+
+ggsave(filename =paste0("R figures/celltrek/celltrek nuclei/psupertime/Feature Trajectory plot-",unique(tmp$id),".png"),dpi = 150,height = 6,width = 8)
+
+
+trajectory.order<-psuper_obj$proj_dt[,c(1:2)]
+
+trajectory.order.list[[i]]<-trajectory.order
+names(trajectory.order.list)[i]<-as.character(unique(tmp$id))
+
+
+psuper.obj.list[[i]]<-psuper_obj
+names(psuper.obj.list)[i]<-as.character(unique(tmp$id))
+
+rm(tmp,psuper_obj,trajectory.order,y)
+
+gc()
+
+}
+
+save(trajectory.order.list,psuper.obj.list,file = "R figures/celltrek/celltrek nuclei/psupertime/psupertime output.RData")
+```
+
+```{r,add metadata to seurat,include=FALSE}
+
+trajectory.mat<-as.data.frame(do.call(rbind,trajectory.order.list))
+
+rownames(trajectory.mat)<-trajectory.mat$cell_id
+
+colnames(trajectory.mat)[2]<-"PV.CV.Trajectory"
+
+y.ck<-AddMetaData(y.ck,trajectory.mat[which(rownames(trajectory.mat) %in% colnames(y.ck)),])
+
+o.ck<-AddMetaData(o.ck,trajectory.mat[which(rownames(trajectory.mat) %in% colnames(o.ck)),])
+
+save(y.ck,o.ck,file = "paired scRNA.RData")
+
+```
+
+### plot the celltrek and psupertime res
+```{r,plot the celltrek and psupertime res,include=FALSE}
+# Co-Embedding Space
+p<-CellDimPlot(o.train,reduction = "umap",
+               group.by = "type",
+            pt.size =2,
+            title = "Co-Embedding Space(Old)",
+ theme_args =list(plot.title=element_text(size=16,
+                                          hjust=0.5,                                                     face="bold")),
+  theme_use = "theme_blank")
+
+ggsave(p,filename ="R figures/celltrek/celltrek nuclei/Co-Embedding Space(Old).pdf",dpi = 300,height = 4,width = 5 )
+ggsave(p,filename ="R figures/celltrek/celltrek nuclei/Co-Embedding Space(Old).png",dpi = 300,height = 4,width = 5 )
+
+p<-CellDimPlot(y.train,reduction = "umap",
+               group.by = "type",
+            pt.size =2,
+            title = "Co-Embedding Space(Young)",
+ theme_args =list(plot.title=element_text(size=16,
+                                          hjust=0.5,                                                     face="bold")),
+  theme_use = "theme_blank")
+
+ggsave(p,filename ="R figures/celltrek/celltrek nuclei/Co-Embedding Space(Young).pdf",dpi = 300,height = 4,width = 5 )
+ggsave(p,filename ="R figures/celltrek/celltrek nuclei/Co-Embedding Space(Young).png",dpi = 300,height = 4,width = 5 )
+
+# spatial plot from xdbit
+
+p<-CellDimPlot(y.st,group.by = "liver.zonation",reduction = "spatial",palette = "npg",pt.size = 3,title = "Young(xDbit)",
+ theme_args =list(plot.title=element_text(size=16,
+                                          hjust=0.5,                                                     face="bold")),
+  theme_use = "theme_blank")
+
+ggsave(p,filename ="R figures/celltrek/celltrek nuclei/spatial plot for Young(xDbit).pdf",dpi = 300,height = 4,width = 5 )
+ggsave(p,filename ="R figures/celltrek/celltrek nuclei/spatial plot for Young(xDbit).png",dpi = 300,height = 4,width = 5 )
+
+p<-CellDimPlot(o.st,group.by = "liver.zonation",reduction = "spatial",palette = "npg",pt.size = 3,title = "Old(xDbit)",
+ theme_args =list(plot.title=element_text(size=16,
+                                          hjust=0.5,                                                     face="bold")),
+  theme_use = "theme_blank")
+
+ggsave(p,filename ="R figures/celltrek/celltrek nuclei/spatial plot for Old(xDbit).pdf",dpi = 300,height = 4,width = 5 )
+ggsave(p,filename ="R figures/celltrek/celltrek nuclei/spatial plot for Old(xDbit).png",dpi = 300,height = 4,width = 5 )
+
+# celltrek 
+
+## nuclei
+y.ck$nuclei<-factor(y.ck$nuclei)
+o.ck$nuclei<-factor(o.ck$nuclei)
+
+p<-CellDimPlot(y.ck,group.by = "nuclei",reduction = "celltrek",pt.size = 1.5,palette = "nejm",title = "Young(CellTrek-Tessarz)",
+ theme_args =list(plot.title=element_text(size=16,
+                                          hjust=0.5,                                                     face="bold")),
+  theme_use = "theme_blank")
+
+ggsave(p,filename ="R figures/celltrek/celltrek nuclei/spatial plot for nuclei-Young(CellTrek-Tessarz).pdf",dpi = 300,height = 4,width = 5 )
+ggsave(p,filename ="R figures/celltrek/celltrek nuclei/spatial plot for nuclei-Young(CellTrek-Tessarz).png",dpi = 300,height = 4,width = 5 )
+
+p<-CellDimPlot(o.ck,group.by = "nuclei",reduction = "celltrek",pt.size = 1.5,palette = "nejm",title = "Old(CellTrek-Tessarz)",
+ theme_args =list(plot.title=element_text(size=16,
+                                          hjust=0.5,                                                     face="bold")),
+  theme_use = "theme_blank")
+
+ggsave(p,filename ="R figures/celltrek/celltrek nuclei/spatial plot for nuclei-Old(CellTrek-Tessarz).pdf",dpi = 300,height = 4,width = 5 )
+ggsave(p,filename ="R figures/celltrek/celltrek nuclei/spatial plot for nuclei-Old(CellTrek-Tessarz).png",dpi = 300,height = 4,width = 5 )
+## liver zonation
+p<-CellDimPlot(y.ck,group.by = "liver.zonation",reduction = "celltrek",pt.size = 1.5,palette = "npg",title = "Young(CellTrek-Tessarz)",
+ theme_args =list(plot.title=element_text(size=16,
+                                          hjust=0.5,                                                     face="bold")),
+  theme_use = "theme_blank")
+
+ggsave(p,filename ="R figures/celltrek/celltrek nuclei/spatial plot for zonation-Young(CellTrek-Tessarz).pdf",dpi = 300,height = 4,width = 5 )
+ggsave(p,filename ="R figures/celltrek/celltrek nuclei/spatial plot for zonation-Young(CellTrek-Tessarz).png",dpi = 300,height = 4,width = 5 )
+
+p<-CellDimPlot(o.ck,group.by = "liver.zonation",reduction = "celltrek",pt.size = 1.5,palette = "npg",title = "Old(CellTrek-Tessarz)",
+ theme_args =list(plot.title=element_text(size=16,
+                                          hjust=0.5,                                                     face="bold")),
+  theme_use = "theme_blank")
+
+ggsave(p,filename ="R figures/celltrek/celltrek nuclei/spatial plot for zonation-Old(CellTrek-Tessarz).pdf",dpi = 300,height = 4,width = 5 )
+ggsave(p,filename ="R figures/celltrek/celltrek nuclei/spatial plot for zonation-Old(CellTrek-Tessarz).png",dpi = 300,height = 4,width = 5 )
+
+## PV-CV-trajectory
+p<-FeatureDimPlot(y.ck,feature= "PV.CV.Trajectory",reduction = "celltrek",pt.size = 1.5,palette = "plasma",title = "Young(CellTrek-Tessarz)",bg_cutoff = -1,
+ theme_args =list(plot.title=element_text(size=16,
+                                          hjust=0.5,                                                     face="bold")),
+  theme_use = "theme_blank")
+
+ggsave(p,filename ="R figures/celltrek/celltrek nuclei/spatial plot for Trajectory-Young(CellTrek-Tessarz).pdf",dpi = 300,height = 4,width = 5 )
+ggsave(p,filename ="R figures/celltrek/celltrek nuclei/spatial plot for Trajectory-Young(CellTrek-Tessarz).png",dpi = 300,height = 4,width = 5 )
+
+p<-FeatureDimPlot(o.ck,feature= "PV.CV.Trajectory",reduction = "celltrek",pt.size = 1.5,palette = "plasma",title = "Old(CellTrek-Tessarz)",bg_cutoff = -1,
+ theme_args =list(plot.title=element_text(size=16,
+                                          hjust=0.5,                                                     face="bold")),
+  theme_use = "theme_blank")
+
+ggsave(p,filename ="R figures/celltrek/celltrek nuclei/spatial plot for Trajectory-Old(CellTrek-Tessarz).pdf",dpi = 300,height = 4,width = 5 )
+ggsave(p,filename ="R figures/celltrek/celltrek nuclei/spatial plot for Trajectory-Old(CellTrek-Tessarz).png",dpi = 300,height = 4,width = 5 )
+
+```
+
+```{r,clear the imputation,include=FALSE}
+load("H:/Celia group/xDbit(s4) project(renew)/paired scRNA.RData")
+
+rm.barcode<-y.ck$id_new[which(y.ck$id_new != y.ck$id_raw)]
+Idents(y.ck)<-"id_new"
+y.ck<-subset(y.ck,id_new %nin% rm.barcode)
+y.ck@images$`37_43_C1`<-NULL
+y.ck@images$X37_43_C1<-NULL
+
+
+rm.barcode<-o.ck$id_new[which(o.ck$id_new != o.ck$id_raw)]
+Idents(o.ck)<-"id_new"
+o.ck<-subset(o.ck,id_new %nin% rm.barcode)
+o.ck@images$`37_43_A2`<-NULL
+o.ck@images$`37_43_A2`<-NULL
+```
+
+```{r,run psupertime,include=FALSE}
+y.ck$id<-"Young"
+o.ck$id<-"Old"
+
+slice.list<-list(y.ck,o.ck)
+names(slice.list)<-c("young","old")
+
+trajectory.order.list<-list()
+
+psuper.obj.list<-list()
+
+set.seed(53144)
+
+for (i in 1:length(slice.list)) {
+
+
+tmp<-slice.list[[i]]
+
+# normalize the data
+
+DefaultAssay(tmp)<-"RNA"
+
+
+tmp<- FindVariableFeatures(tmp,selection.method = "vst",
+                              nfeatures = 2000)
+
+tmp<- ScaleData(tmp,vars.to.regress =c("nFeature_RNA","nCount_RNA"),verbose = F)
+
+tmp<-as.SingleCellExperiment(tmp)
+
+# Run psupertime
+
+y=factor(tmp$liver.zonation,levels=c("PV","Mid","CV"))
+
+set.seed(53144)
+
+psuper_obj  = psupertime(tmp, y,n_folds = 10,min_expression =0.1,
+                         sel_genes = "all",
+                         score = "xentropy",test_propn=0.3)
+
+psuper_obj$proj_dt$psuper<-normalize.trajectory(psuper_obj$proj_dt$psuper)
+psuper_obj$cuts_dt[,1]<-NA
+
+plot_labels_over_psupertime(psuper_obj, 
+                            label_name='liver.zonation',
+                            palette = "Set2")+
+  xlab("PV-CV Trajectory")+xlim(-1.5,1.5)+
+  ggtitle(tmp$id)+
+  theme(plot.title = element_text(hjust = 0.5, 
+                                  vjust = 1,
+                                  size = 20, 
+                                  face = "bold"),
+    axis.title.x = element_text(face = "bold", size = 15), 
+    axis.title.y = element_text(face = "bold", size = 15))
+
+ggsave(filename =paste0("R figures/celltrek/celltrek nuclei/psupertime/Density plot-",unique(tmp$id),"-no imputation.pdf"),dpi = 150,height = 4,width = 6)
+
+ggsave(filename =paste0("R figures/celltrek/celltrek nuclei/psupertime/Density plot-",unique(tmp$id),"-no imputation.png"),dpi = 150,height = 4,width = 6)
+
+plot_identified_gene_coefficients(psuper_obj)+
+  ggtitle(tmp$id)+xlab("")+
+  theme(plot.title = element_text(hjust = 0.5, 
+                                  vjust = 1, 
+                                  size = 20, 
+                                  face = "bold"),
+        axis.title.y = element_text(face = "bold", size = 15))
+
+ggsave(filename =paste0("R figures/celltrek/celltrek nuclei/psupertime/Gene Coefficience-",unique(tmp$id),"-no imputation.pdf"),dpi = 150,height = 4,width = 6)
+
+ggsave(filename =paste0("R figures/celltrek/celltrek nuclei/psupertime/Gene Coefficience-",unique(tmp$id),"-no imputation.png"),dpi = 150,height = 4,width = 6)
+
+
+plot_identified_genes_over_psupertime(psuper_obj, 
+                                      label_name='liver.zonation',
+                                      palette = "Set2")+
+  ylab("PV-CV Trajectory")+
+  ggtitle(tmp$id)+
+  theme(plot.title = element_text(hjust = 0.5, 
+                                  vjust = 1, 
+                                  size = 20, 
+                                  face = "bold"),
+    axis.title.x = element_text(face = "bold", size = 15), 
+    axis.title.y = element_text(face = "bold", size = 15))
+
+ggsave(filename =paste0("R figures/celltrek/celltrek nuclei/psupertime/Feature Trajectory plot-",unique(tmp$id),"-no imputation.pdf"),dpi = 150,height = 6,width = 8)
+
+ggsave(filename =paste0("R figures/celltrek/celltrek nuclei/psupertime/Feature Trajectory plot-",unique(tmp$id),"-no imputation.png"),dpi = 150,height = 6,width = 8)
+
+
+trajectory.order<-psuper_obj$proj_dt[,c(1:2)]
+
+trajectory.order.list[[i]]<-trajectory.order
+names(trajectory.order.list)[i]<-as.character(unique(tmp$id))
+
+
+psuper.obj.list[[i]]<-psuper_obj
+names(psuper.obj.list)[i]<-as.character(unique(tmp$id))
+
+rm(tmp,psuper_obj,trajectory.order,y)
+
+gc()
+
+}
+
+save(trajectory.order.list,psuper.obj.list,file = "R figures/celltrek/celltrek nuclei/psupertime/psupertime output-no imputation.RData")
+```
+
+```{r,add metadata to seurat,include=FALSE}
+
+trajectory.mat<-as.data.frame(do.call(rbind,trajectory.order.list))
+
+rownames(trajectory.mat)<-trajectory.mat$cell_id
+
+colnames(trajectory.mat)[2]<-"PV.CV.Trajectory"
+
+y.ck<-AddMetaData(y.ck,trajectory.mat[which(rownames(trajectory.mat) %in% colnames(y.ck)),])
+
+o.ck<-AddMetaData(o.ck,trajectory.mat[which(rownames(trajectory.mat) %in% colnames(o.ck)),])
+
+save(y.ck,o.ck,file = "paired scRNA.RData")
+
+```
+
+```{r,add embending and merge the data}
+pair.sc<-merge(o.ck,y.ck)
+
+barcode<-colnames(pair.sc@assays$RNA@data)
+count<-count[,which(colnames(count) %in% barcode)]
+count.assay<-CreateAssayObject(counts = count,min.cells = 10,
+                               min.features = 0)
+
+pair.sc[["RNA"]]<-count.assay
+
+
+celltrek.embeding<-rbind(as.data.frame(o.ck@reductions[["celltrek"]]@cell.embeddings),as.data.frame(y.ck@reductions[["celltrek"]]@cell.embeddings))
+
+umap.embeding<-rbind(as.data.frame(o.ck@reductions[["umap"]]@cell.embeddings),as.data.frame(y.ck@reductions[["umap"]]@cell.embeddings))
+
+celltrek.embeding<- CreateDimReducObject(
+  embeddings =as.matrix(celltrek.embeding),
+  assay = "RNA",
+  key = "celltrek_")
+
+umap.embeding<- CreateDimReducObject(
+  embeddings =as.matrix(umap.embeding),
+  assay = "RNA",
+  key = "umap_")
+
+pair.sc[["celltrek"]]<-celltrek.embeding
+pair.sc[["umap"]]<-umap.embeding
+
+pair.sc$age<-pair.sc$id
+pair.sc$age<-factor(pair.sc$age,levels = c("Young","Old"))
+pair.sc$liver.zonation<-factor(pair.sc$liver.zonation,
+                               levels = c("PV","Mid","CV"))
+
+pair.sc$nuclei<-factor(pair.sc$nuclei)
+
+save(pair.sc,file = "merged paired scRNA.RData")
+
+rm(celltrek.embeding,umap.embeding,o.ck,y.ck)
+```
+
+```{r,ploidy propotion,include=FALSE}
+p<-CellStatPlot(pair.sc,stat.by =  "nuclei",group.by = "age",
+             split.by = "liver.zonation",palette = "nejm")
+
+ggsave(p,filename ="R figures/celltrek/celltrek nuclei/nuclei proportion per zonation.pdf",dpi = 300,height = 4,width =8 )
+ggsave(p,filename ="R figures/celltrek/celltrek nuclei/nuclei proportion per zonation.png",dpi = 300,height = 4,width = 8 )
+```
+
+
+### pathway enrichemnt with own dataset
+
+```{r,calculate module score,include=FALSE}
+drug.marker<-read.csv(file = "Key markers in Celia lab (Mouse and human).csv",row.names = 1)
+drug.marker<-drug.marker[!is.na(drug.marker$to_geneID),]
+
+drug.gene<-drug.marker$to_geneID[which(drug.marker$Broad.category=="drug_metabolism")]
+
+drug.gene.cyp<-unique(drug.gene[grepl("Cyp",drug.gene)])
+drug.list<-list("drug.metabolism"=drug.gene.cyp)
+
+pair.sc<-AddModuleScore_UCell(pair.sc,
+                              features = drug.list,
+                              BPPARAM =BiocParallel::SnowParam(workers = 1),name = "")
+
+```
+
+
+```{r,split the data,include=FALSE}
+Idents(pair.sc)<-"nuclei"
+dat.2n<-subset(pair.sc,idents="2n")
+dat.4n<-subset(pair.sc,idents="4n")
+dat.8n<-subset(pair.sc,idents="8n")
+
+dat.2n<-AddModuleScore_UCell(dat.2n,assay = "RNA",slot = "data",
+                              features = drug.list,
+                              BPPARAM =BiocParallel::SnowParam(workers = 1),name = "")
+dat.4n<-AddModuleScore_UCell(dat.4n,assay = "RNA",slot = "data",
+                              features = drug.list,
+                              BPPARAM =BiocParallel::SnowParam(workers = 1),name = "")
+
+dat.8n<-AddModuleScore_UCell(dat.8n,assay = "RNA",slot = "data",
+                              features = drug.list,
+                              BPPARAM =BiocParallel::SnowParam(workers = 1),name = "")
+
+dat.list<-list(dat.2n,dat.4n,dat.8n)
+```
+
+
+
+```{r,drug metabolism,include=FALSE}
+p<-FeatureStatPlot(dat.2n,stat.by = "drug.metabolism",
+                plot_type ="box",
+                title = "Drug Metabolism(2n)",
+                palette = "lancet",
+                theme_args = list(plot.title=element_text(size=16,
+                                          hjust=0.5,                                                     face="bold")),
+                split.by = "age", group.by  = "liver.zonation",
+                comparisons = list(c("Young","Old")),multiplegroup_comparisons = T)
+
+ggsave(p,filename ="R figures/celltrek/celltrek nuclei/Drug Metabolism(2n).pdf",dpi = 300,height = 4,width =6 )
+ggsave(p,filename ="R figures/celltrek/celltrek nuclei/Drug Metabolism(2n).png",dpi = 300,height = 4,width = 6 )
+
+p<-FeatureStatPlot(dat.4n,stat.by = "drug.metabolism",
+                plot_type ="box",
+                title = "Drug Metabolism(4n)",
+                palette = "lancet",
+                theme_args = list(plot.title=element_text(size=16,
+                                          hjust=0.5,                                                     face="bold")),
+                split.by = "age", group.by  = "liver.zonation",
+                comparisons = list(c("Young","Old")),multiplegroup_comparisons = T)
+
+ggsave(p,filename ="R figures/celltrek/celltrek nuclei/Drug Metabolism(4n).pdf",dpi = 300,height = 4,width =6 )
+ggsave(p,filename ="R figures/celltrek/celltrek nuclei/Drug Metabolism(4n).png",dpi = 300,height = 4,width = 6 )
+
+p<-FeatureStatPlot(dat.8n,stat.by = "drug.metabolism",
+                plot_type ="box",
+                title = "Drug Metabolism(8n)",
+                palette = "lancet",
+                theme_args = list(plot.title=element_text(size=16,
+                                          hjust=0.5,                                                     face="bold")),
+                split.by = "age", group.by  = "liver.zonation",
+                comparisons = list(c("Young","Old")),multiplegroup_comparisons = T)
+
+ggsave(p,filename ="R figures/celltrek/celltrek nuclei/Drug Metabolism(8n).pdf",dpi = 300,height = 4,width =6 )
+ggsave(p,filename ="R figures/celltrek/celltrek nuclei/Drug Metabolism(8n).png",dpi = 300,height = 4,width = 6 )
+
+```
+
+```{r,make figure only compare the ploidy,include=FALSE}
+Idents(pair.sc)<-"age"
+y.dat<-subset(pair.sc,idents=c("Young"))
+o.dat<-subset(pair.sc,idents=c("Old"))
+
+p<-FeatureStatPlot(o.dat,stat.by = "drug.metabolism",
+                plot_type ="box",
+                title = "Drug Metabolism(Old)",
+                palette = "lancet",
+                theme_args = list(plot.title=element_text(size=16,
+                                          hjust=0.5,                                                     face="bold")),
+                 group.by  = "nuclei",
+                comparisons = list(c("2n","4n"),c("4n","8n"),c("2n","8n")),multiplegroup_comparisons = T)
+ggsave(p,filename ="R figures/celltrek/celltrek nuclei/Drug Metabolism(Old).pdf",dpi = 300,height = 4,width =6 )
+ggsave(p,filename ="R figures/celltrek/celltrek nuclei/Drug Metabolism(Old).png",dpi = 300,height = 4,width = 6 )
+
+p<-FeatureStatPlot(y.dat,stat.by = "drug.metabolism",
+                plot_type ="box",
+                title = "Drug Metabolism(Young)",
+                palette = "lancet",
+                theme_args = list(plot.title=element_text(size=16,
+                                          hjust=0.5,                                                     face="bold")),
+                 group.by  = "nuclei",
+                comparisons = list(c("2n","4n"),c("4n","8n"),c("2n","8n")),multiplegroup_comparisons = T)
+ggsave(p,filename ="R figures/celltrek/celltrek nuclei/Drug Metabolism(Young).pdf",dpi = 300,height = 4,width =6 )
+ggsave(p,filename ="R figures/celltrek/celltrek nuclei/Drug Metabolism(Young).png",dpi = 300,height = 4,width = 6 )
+
+```
+
+```{r,laod the genes,include=FALSE}
+load("heatmap obj for scMagSigPro.RData")
+enrich.res<-ht$enrichment$enrichment
+enrich.res<-enrich.res[which(enrich.res$Database=="Reactome" &
+                               enrich.res$p.adjust<0.05),]
+tca.res<-enrich.res[which(enrich.res$Description=="The citric acid (TCA) cycle and respiratory electron transport"),]
+tca.gene<-str_split(tca.res$geneID,"/")[[1]]
+rm(tca.res)
+
+bile.res<-enrich.res[which(enrich.res$Description=="Bile acid and bile salt metabolism"),]
+fatty.res<-enrich.res[which(enrich.res$Description=="Fatty acid metabolism"),]
+peroxisomal.res<-enrich.res[which(enrich.res$Description=="Peroxisomal lipid metabolism"),]
+bile.gene<-str_split(bile.res$geneID,"/")[[1]]
+fatty.gene<-c(str_split(fatty.res$geneID,"/")[[1]],
+              str_split(fatty.res$geneID,"/")[[2]])
+peroxisomal.gene<-str_split(peroxisomal.res$geneID,"/")[[1]]
+rm(bile.res,fatty.res,peroxisomal.res)
+
+Hemostasis.res<-enrich.res[which(enrich.res$Description=="Hemostasis"),]
+Platelet.res<-enrich.res[which(enrich.res$Description=="Platelet activation, signaling and aggregation"),]
+DAP12.res<-enrich.res[which(enrich.res$Description=="DAP12 interactions"),]
+
+
+Hemostasis.gene<-str_split(Hemostasis.res$geneID,"/")[[1]]
+Platelet.gene<-c(str_split(Platelet.res$geneID,"/")[[1]])
+DAP12.gene<-str_split(DAP12.res$geneID,"/")[[1]]
+
+rm(Hemostasis.res,Platelet.res,Immunoregulatory.res,enrich.res,DAP12.res,ht)
+
+marker.from.mouse<-data.frame(gene=c(tca.gene,
+                                     fatty.gene,
+                                     bile.gene,
+                                     peroxisomal.gene,
+                                     Hemostasis.gene,
+                                     Platelet.gene,
+                                     DAP12.gene),
+                              
+                              pathway=c(rep("TCA cycle",
+                                            length(tca.gene)),
+                                        rep("Fatty Acid Metabolism",
+                                            length(fatty.gene)),
+                                        rep("Bile Acid Metabolism",
+                                            length(bile.gene)),
+                                        rep("Peroxisomal Lipid Metabolism",
+                                            length(peroxisomal.gene)),
+                                        rep("Hemostasis",
+                                            length(Hemostasis.gene)),
+                                        rep("Platelet Activation",
+                                            length(Platelet.gene)),
+                                        rep("DAP12 Interaction",
+                                            length(DAP12.gene))))
+
+marker.list<-list()
+
+idx<-unique(marker.from.mouse$pathway)
+
+for (i in seq_along(idx)) {
+  
+  tmp<-marker.from.mouse$gene[which(marker.from.mouse$pathway==idx[i])]
+  
+  marker.list[[i]]<-tmp
+  
+  names(marker.list)[i]<-idx[i]
+
+rm(tmp)
+  
+}
+
+```
+
+```{r,add module score,include=FALSE}
+pair.sc<-AddModuleScore_UCell(pair.sc,assay = "RNA",slot = "data",
+                              features = marker.list,
+                              BPPARAM =BiocParallel::SnowParam(workers = 4),name = "")
+```
+
+
+```{r,plot the metabolism acoress ploidy,include=FALSE}
+Idents(pair.sc)<-"age"
+y.dat<-subset(pair.sc,idents=c("Young"))
+o.dat<-subset(pair.sc,idents=c("Old"))
+
+p<-FeatureStatPlot(o.dat,stat.by = "TCA.cycle",
+                plot_type ="box",
+                title = "TCA cycle(Old)",
+                palette = "lancet",
+                theme_args = list(plot.title=element_text(size=16,
+                                          hjust=0.5,                                                     face="bold")),
+                 group.by  = "nuclei",
+                comparisons = list(c("2n","4n"),c("4n","8n"),c("2n","8n")),multiplegroup_comparisons = T)
+ggsave(p,filename ="R figures/celltrek/celltrek nuclei/TCA cycle(Old).pdf",dpi = 300,height = 4,width =6 )
+ggsave(p,filename ="R figures/celltrek/celltrek nuclei/TCA cycle(Old).png",dpi = 300,height = 4,width = 6 )
+
+p<-FeatureStatPlot(y.dat,stat.by = "TCA.cycle",
+                plot_type ="box",
+                title = "TCA cycle(Young)",
+                palette = "lancet",
+                theme_args = list(plot.title=element_text(size=16,
+                                          hjust=0.5,                                                     face="bold")),
+                 group.by  = "nuclei",
+                comparisons = list(c("2n","4n"),c("4n","8n"),c("2n","8n")),multiplegroup_comparisons = T)
+ggsave(p,filename ="R figures/celltrek/celltrek nuclei/TCA cycle(Young).pdf",dpi = 300,height = 4,width =6 )
+ggsave(p,filename ="R figures/celltrek/celltrek nuclei/TCA cycle(Young).png",dpi = 300,height = 4,width = 6 )
+
+p<-FeatureStatPlot(o.dat,stat.by = "Fatty.Acid.Metabolism",
+                plot_type ="box",
+                title = "Fatty Acid Metabolism(Old)",
+                palette = "lancet",
+                theme_args = list(plot.title=element_text(size=16,
+                                          hjust=0.5,                                                     face="bold")),
+                 group.by  = "nuclei",
+                comparisons = list(c("2n","4n"),c("4n","8n"),c("2n","8n")),multiplegroup_comparisons = T)
+ggsave(p,filename ="R figures/celltrek/celltrek nuclei/Fatty Acid Metabolism(Old).pdf",dpi = 300,height = 4,width =6 )
+ggsave(p,filename ="R figures/celltrek/celltrek nuclei/Fatty Acid Metabolism(Old).png",dpi = 300,height = 4,width = 6 )
+
+p<-FeatureStatPlot(y.dat,stat.by = "Fatty.Acid.Metabolism",
+                plot_type ="box",
+                title = "Fatty Acid Metabolism(Young)",
+                palette = "lancet",
+                theme_args = list(plot.title=element_text(size=16,
+                                          hjust=0.5,                                                     face="bold")),
+                 group.by  = "nuclei",
+                comparisons = list(c("2n","4n"),c("4n","8n"),c("2n","8n")),multiplegroup_comparisons = T)
+ggsave(p,filename ="R figures/celltrek/celltrek nuclei/Fatty Acid Metabolism(Young).pdf",dpi = 300,height = 4,width =6 )
+ggsave(p,filename ="R figures/celltrek/celltrek nuclei/Fatty Acid Metabolism(Young).png",dpi = 300,height = 4,width = 6 )
+
+p<-FeatureStatPlot(o.dat,stat.by = "Bile.Acid.Metabolism",
+                plot_type ="box",
+                title = "Bile Acid Metabolism(Old)",
+                palette = "lancet",
+                theme_args = list(plot.title=element_text(size=16,
+                                          hjust=0.5,                                                     face="bold")),
+                 group.by  = "nuclei",
+                comparisons = list(c("2n","4n"),c("4n","8n"),c("2n","8n")),multiplegroup_comparisons = T)
+ggsave(p,filename ="R figures/celltrek/celltrek nuclei/Bile Acid Metabolism(Old).pdf",dpi = 300,height = 4,width =6 )
+ggsave(p,filename ="R figures/celltrek/celltrek nuclei/Bile Acid Metabolism(Old).png",dpi = 300,height = 4,width = 6 )
+
+p<-FeatureStatPlot(y.dat,stat.by = "Bile.Acid.Metabolism",
+                plot_type ="box",
+                title = "Bile Acid Metabolism(Young)",
+                palette = "lancet",
+                theme_args = list(plot.title=element_text(size=16,
+                                          hjust=0.5,                                                     face="bold")),
+                 group.by  = "nuclei",
+                comparisons = list(c("2n","4n"),c("4n","8n"),c("2n","8n")),multiplegroup_comparisons = T)
+ggsave(p,filename ="R figures/celltrek/celltrek nuclei/Bile Acid Metabolism(Young).pdf",dpi = 300,height = 4,width =6 )
+ggsave(p,filename ="R figures/celltrek/celltrek nuclei/Bile Acid Metabolism(Young).png",dpi = 300,height = 4,width = 6 )
+
+p<-FeatureStatPlot(o.dat,stat.by = "Peroxisomal.Lipid.Metabolism",
+                plot_type ="box",
+                title = "Peroxisomal Lipid Metabolism(Old)",
+                palette = "lancet",
+                theme_args = list(plot.title=element_text(size=16,
+                                          hjust=0.5,                                                     face="bold")),
+                 group.by  = "nuclei",
+                comparisons = list(c("2n","4n"),c("4n","8n"),c("2n","8n")),multiplegroup_comparisons = T)
+ggsave(p,filename ="R figures/celltrek/celltrek nuclei/Peroxisomal Lipid Metabolism(Old).pdf",dpi = 300,height = 4,width =6 )
+ggsave(p,filename ="R figures/celltrek/celltrek nuclei/Peroxisomal Lipid Metabolism(Old).png",dpi = 300,height = 4,width = 6 )
+
+p<-FeatureStatPlot(y.dat,stat.by = "Peroxisomal.Lipid.Metabolism",
+                plot_type ="box",
+                title = "Peroxisomal Lipid Metabolism(Young)",
+                palette = "lancet",
+                theme_args = list(plot.title=element_text(size=16,
+                                          hjust=0.5,                                                     face="bold")),
+                 group.by  = "nuclei",
+                comparisons = list(c("2n","4n"),c("4n","8n"),c("2n","8n")),multiplegroup_comparisons = T)
+ggsave(p,filename ="R figures/celltrek/celltrek nuclei/Peroxisomal Lipid Metabolism(Young).pdf",dpi = 300,height = 4,width =6 )
+ggsave(p,filename ="R figures/celltrek/celltrek nuclei/Peroxisomal Lipid Metabolism(Young).png",dpi = 300,height = 4,width = 6 )
+```
+
+
+
+### Trajectory heatmap
+```{r,include=FALSE}
+
+zero.feature<-c("Cyp24a1","Cyp2d13","Sult2a2","Sult2a4","Sult2a1","Sult2a3","Sult2a5","Sult2a6","Cyp27b1","Cyp19a1","Cyp11a1","Nat3","Abcg4","Gm43638","Ugt2a1","Cyp4f37","Sult3a2","Sult3a1","Sult6b2","Ugt1a8")
+
+drug.gene<-drug.gene[-which(drug.gene %in%zero.feature)]
+drug.gene<-unique(drug.gene)
+
+pair.sc$Young.Trajectory<-pair.sc$PV.CV.Trajectory
+pair.sc$Young.Trajectory[which(pair.sc$age=="Old")]<-NA
+
+pair.sc$Old.Trajectory<-pair.sc$PV.CV.Trajectory
+pair.sc$Old.Trajectory[which(pair.sc$age=="Young")]<-NA
+
+
+source("CreateDenoisedAssay.R")
+pair.sc<-CreateDenoisedAssay(pair.sc,knn.num = 10)
+
+
+pair.sc<-RunDynamicFeatures(srt = pair.sc, 
+                            lineages =   c("Young.Trajectory",                                                   "Old.Trajectory"),
+                            features =drug.gene,
+                              assay = "RNA",
+                            BPPARAM = BiocParallel::SnowParam(workers = 1))
+
+```
+
+```{r,plot trajectory heatmap,include=FALSE}
+pair.sc <- AnnotateFeatures(pair.sc, species = "Mus_musculus", db = c("TF", "CSPA"))
+
+ht <- DynamicHeatmap(
+  srt =pair.sc, 
+  lineages = c("Young.Trajectory", "Old.Trajectory"),
+  use_fitted = TRUE,  reverse_ht = F,
+  pseudotime_label = 25, 
+  cluster_rows = TRUE,
+  min_expcells = 1,
+  r.sq = 0,
+  dev.expl = 0,
+  nlabel = 0,show_row_names = T,
+  padjust = 1,pseudotime_palette = "plasma",
+  cell_annotation =c("age","liver.zonation","nuclei"),
+  cell_annotation_palette = c("lancet","npg","nejm"),
+  feature_annotation = c("TF", "CSPA"),
+  feature_annotation_palcolor = list(c("gold", "steelblue"), c("forestgreen")),
+  separate_annotation = list("nuclei"), 
+  separate_annotation_palette = c("nejm"),
+  height = 8, width = 2,
+  use_raster = T,
+  raster_by_magick = T,
+)
+
+pdf(file = "R figures/celltrek/celltrek nuclei/trajectory heatmap.pdf",width = 10,height = 11)
+ht$plot
+dev.off()
+```
+
+
+```{r,include=FALSE}
+source("DbDynamicsPlot.R") 
+
+gene.idx<-c("Nr1i3","Cyp1a2","Cyp8b1","Cyp2d26", "Cyp2d12",
+            "Ugt1a1","Cyp17a1","Cyp39a1")
+
+for (i in seq_along(gene.idx)) {
+  
+ p<-DbDynamicsPlot(srt = pair.sc,feature = gene.idx[i],
+                   assay = "DeNoise",pt.size = 2)
+ 
+ ggsave(p,filename = paste0("R figures/celltrek/celltrek nuclei/",
+                            gene.idx[i],".pdf"),
+        width = 6,height = 4,dpi = 300)
+ 
+ ggsave(p,filename = paste0("R figures/celltrek/celltrek nuclei/",
+                            gene.idx[i],".png"),
+        width = 6,height = 4,dpi = 300)
+  
+}
+
+```
+
+
+
+
+
+
+
+
+
