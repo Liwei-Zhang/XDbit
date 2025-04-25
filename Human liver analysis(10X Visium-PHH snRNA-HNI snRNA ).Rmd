@@ -1,0 +1,745 @@
+---
+title: "human liver analysis"
+output: html_notebook
+---
+
+# prepare and convert the sig gene from mouse to human
+
+```{r,include=FALSE}
+# Extract TCA associated gene and calcuate the module score
+load("heatmap obj for scMagSigPro.RData")
+enrich.res<-ht$enrichment$enrichment
+enrich.res<-enrich.res[which(enrich.res$Database=="Reactome" &
+                               enrich.res$p.adjust<0.05),]
+tca.res<-enrich.res[which(enrich.res$Description=="The citric acid (TCA) cycle and respiratory electron transport"),]
+tca.gene<-str_split(tca.res$geneID,"/")[[1]]
+rm(tca.res)
+
+bile.res<-enrich.res[which(enrich.res$Description=="Bile acid and bile salt metabolism"),]
+fatty.res<-enrich.res[which(enrich.res$Description=="Fatty acid metabolism"),]
+peroxisomal.res<-enrich.res[which(enrich.res$Description=="Peroxisomal lipid metabolism"),]
+bile.gene<-str_split(bile.res$geneID,"/")[[1]]
+fatty.gene<-c(str_split(fatty.res$geneID,"/")[[1]],
+              str_split(fatty.res$geneID,"/")[[2]])
+peroxisomal.gene<-str_split(peroxisomal.res$geneID,"/")[[1]]
+rm(bile.res,fatty.res,peroxisomal.res)
+
+Hemostasis.res<-enrich.res[which(enrich.res$Description=="Hemostasis"),]
+Platelet.res<-enrich.res[which(enrich.res$Description=="Platelet activation, signaling and aggregation"),]
+DAP12.res<-enrich.res[which(enrich.res$Description=="DAP12 interactions"),]
+
+
+Hemostasis.gene<-str_split(Hemostasis.res$geneID,"/")[[1]]
+Platelet.gene<-c(str_split(Platelet.res$geneID,"/")[[1]])
+DAP12.gene<-str_split(DAP12.res$geneID,"/")[[1]]
+
+rm(Hemostasis.res,Platelet.res,Immunoregulatory.res,enrich.res,DAP12.res,ht)
+
+marker.from.mouse<-data.frame(gene=c(tca.gene,
+                                     fatty.gene,
+                                     bile.gene,
+                                     peroxisomal.gene,
+                                     Hemostasis.gene,
+                                     Platelet.gene,
+                                     DAP12.gene),
+                              
+                              pathway=c(rep("TCA cycle",
+                                            length(tca.gene)),
+                                        rep("Fatty Acid Metabolism",
+                                            length(fatty.gene)),
+                                        rep("Bile Acid Metabolism",
+                                            length(bile.gene)),
+                                        rep("Peroxisomal Lipid Metabolism",
+                                            length(peroxisomal.gene)),
+                                        rep("Hemostasis",
+                                            length(Hemostasis.gene)),
+                                        rep("Platelet Activation",
+                                            length(Platelet.gene)),
+                                        rep("DAP12 Interaction",
+                                            length(DAP12.gene))))
+
+feature<-GeneConvert(
+  marker.from.mouse$gene,
+  geneID_from_IDtype = "symbol",
+  geneID_to_IDtype = "symbol",
+  species_from = "Mus_musculus",
+  species_to = "Homo_sapiens",
+  Ensembl_version = 103,
+  biomart = NULL,
+  mirror = NULL,
+  max_tries = 5
+)[["geneID_res"]]
+
+marker.from.mouse$human.symbol<-feature$to_geneID[match(marker.from.mouse$gene,feature$from_geneID)]
+
+rm(feature,tca.gene,fatty.gene,bile.gene,peroxisomal.gene,Hemostasis.gene,Platelet.gene,DAP12.gene)
+
+marker.from.mouse<-marker.from.mouse[!is.na(marker.from.mouse$human.symbol),]
+
+write.csv(marker.from.mouse,file = "translated sig genes from mouse to human.csv")
+```
+
+```{r,calculate module score,include=FALSE}
+drug.marker<-read.csv(file = "Key markers in Celia lab (Mouse and human).csv",row.names = 1)
+
+drug.marker<-drug.marker[!is.na(drug.marker$Gene.symbol.Human),]
+
+drug.gene<-drug.marker$Gene.symbol.Human[which(drug.marker$Broad.category=="drug_metabolism")]
+
+drug.list<-list("drug metabolism"=drug.gene)
+```
+
+# load the human liver Visuim
+
+```{r,load the human liver Visuim,include=FALSE}
+count<-readMM(file = "human liver data/humanVisium/matrix.mtx")
+barcode<-read_tsv(file = "human liver data/humanVisium/barcodes.tsv",col_names = "barcodes")
+feature<-read_tsv(file = "human liver data/humanVisium/features.tsv",col_names = "features")
+meta<-read.csv(file = "human liver data/humanVisium.csv",header = T)
+
+rownames(count)<-feature$features
+colnames(count)<-barcode$barcodes
+rm(barcode,feature)
+
+count<-count[,-which(colnames(count) %nin% meta$spot)]
+rownames(meta)<-meta$spot
+
+human.spatial<-CreateSeuratObject(counts = count,meta.data = meta,min.cells = 100,min.features = 1)
+
+meta<-meta[,c(1,2)]
+meta<- CreateDimReducObject(
+  embeddings =as.matrix(meta),
+  assay = "RNA",
+  key = "UMAP_")
+human.spatial[["spatial"]]<-meta
+rm(meta,count)
+
+Idents(human.spatial)<-"diet"
+human.spatial<-subset(human.spatial,idents="healthy")
+
+human.spatial<-human.spatial%>% 
+  NormalizeData(normalization.method = "LogNormalize")%>%
+ FindVariableFeatures(selection.method = "vst",
+                      nfeatures = 2000)%>%
+ ScaleData(verbose = F,
+           vars.to.regress =c("nCount_RNA","nFeature_RNA"))
+
+human.spatial$zonationGroup<-factor(human.spatial$zonationGroup,
+                                    levels = c("Portal",
+                                               "Periportal",
+                                               "Mid",
+                                               "Central"))
+
+save(human.spatial,file ="human spatial data.RData" )
+```
+
+```{r,dim plot for human spatial,include=FALSE}
+p<-CellDimPlot(human.spatial,
+            group.by = "zonationGroup",
+            palette = "YlGnBu",
+            pt.size = 2,
+            theme_use ="theme_blank",
+            title = "Human Spatial Liver Atlas",
+            theme_args = list(plot.title = element_text(
+              face = "bold",size = 14,hjust = 0.5)))
+
+ggsave(p,filename = "human liver data/spatial dim for zonationGroup.pdf",
+       dpi = 300,width = 5,height = 4)
+ggsave(p,filename = "human liver data/spatial dim for zonationGroup.png",
+       dpi = 300,width = 5,height = 4)
+
+
+p<-FeatureDimPlot(human.spatial,
+            features =  "zonation",
+            palette = "plasma",
+            pt.size = 2,
+            theme_use ="theme_blank",
+            title = "Human Spatial Liver Atlas",
+            theme_args = list(plot.title = element_text(
+              face = "bold",size = 14,hjust = 0.5)))
+
+ggsave(p,filename = "human liver data/spatial dim for zonation.pdf",
+       dpi = 300,width = 5,height = 4)
+ggsave(p,filename = "human liver data/spatial dim for zonation.png",
+       dpi = 300,width = 5,height = 4)
+
+```
+
+```{r,denoise,include=FALSE}
+source("CreateDenoisedAssay.R")
+human.spatial<-CreateDenoisedAssay(human.spatial)
+```
+
+```{r,calculate dynamic zonation gene,include=FALSE}
+
+human.spatial<-RunDynamicFeatures(human.spatial,
+                                  lineages = "zonation",
+                                  assay = "RNA",
+                                  slot = "counts",
+                                  n_candidates = 1000)
+
+save(human.spatial,file ="human spatial data.RData" )
+```
+
+## validate the sig gene from mouse
+
+```{r,valdiated the zonation dynamics of sig gene,include=FALSE}
+human.spatial <- RunDynamicFeatures(srt = human.spatial,
+                                    lineages = "zonation",
+                                    features =marker.from.mouse$human.symbol,
+                                       assay = "DeNoise",BPPARAM =BiocParallel::SnowParam(workers = 1) )
+
+DefaultAssay(human.spatial)<-"DeNoise"
+human.spatial <- AnnotateFeatures(human.spatial, species = "Homo_sapiens", db = c("TF", "CSPA"),assays = "DeNoise")
+
+gene.cluster<-marker.from.mouse$pathway
+names(gene.cluster)<-marker.from.mouse$human.symbol
+
+ht1 <- DynamicHeatmap(
+  srt =human.spatial,
+  lineages = "zonation",
+  assay = "DeNoise",
+  use_fitted = T,  reverse_ht = F,
+  pseudotime_label = 25, 
+  cluster_rows = TRUE,
+  min_expcells =50,
+  nlabel = 15,
+  species = "Homo_sapiens",
+  show_row_names = F,
+  r.sq = -1,
+  dev.expl = 0,pvalueCutoff = 0.05,
+  padjust = 1,pseudotime_palette = "plasma",
+  height = 4, width = 2,
+  use_raster = T,
+  raster_by_magick = T,
+)
+pdf(file = "human liver data/the expression of sig gene along spatial zonation.pdf",width = 6,height = 6)
+print(ht1$plot)
+dev.off()
+```
+
+```{r, add module score,include=FALSE}
+#arker.from.mouse<-marker.from.mouse[,c(2,3)]
+marker.list<-list()
+
+idx<-unique(marker.from.mouse$pathway)
+
+for (i in seq_along(idx)) {
+  
+  tmp<-marker.from.mouse$human.symbol[which(marker.from.mouse$pathway==idx[i])]
+  
+  marker.list[[i]]<-tmp
+  
+  names(marker.list)[i]<-idx[i]
+
+rm(tmp)
+  
+}
+
+rm(idx,i)
+
+human.spatial<-AddModuleScore_UCell(human.spatial,
+                                    features = marker.list,
+                                    name = "",
+                                    BPPARAM = BiocParallel::SnowParam(workers = 1) )
+
+
+human.spatial<-AddModuleScore_UCell(human.spatial,
+                                    features = drug.gene.cyp.list,
+                                    name = "",
+                                    BPPARAM = BiocParallel::SnowParam(workers = 1) )
+```
+
+```{r,plot module score,include=FALSE}
+source("DbDynamicsPlot.human.R")
+#
+p<-DbDynamicsPlot.human(srt = human.spatial,feature = "TCA.cycle",
+                     y.label = "Module Score",
+                     pt.size = 1,
+                     title = "TCA Cycle Score")
+
+ggsave(p,filename = "human liver data/TCA score (human spatial).pdf",width =6,height = 4,dpi = 300)
+ggsave(p,filename = "human liver data/TCA score (human spatial).png",width =6,height = 4,dpi = 300)
+#
+p<-DbDynamicsPlot.human(srt = human.spatial,
+                        feature = "Fatty.Acid.Metabolism",
+                     y.label = "Module Score",
+                     pt.size = 1,
+                     title = "Fatty Acid Metabolism Score")
+
+ggsave(p,filename = "human liver data/Fatty Acid Metabolism Score (human spatial).pdf",width =6,height = 4,dpi = 300)
+ggsave(p,filename = "human liver data/Fatty Acid Metabolism Score (human spatial).png",width =6,height = 4,dpi = 300)
+
+#
+p<-DbDynamicsPlot.human(srt = human.spatial,
+                        feature = "Bile.Acid.Metabolism",
+                     y.label = "Module Score",
+                     pt.size = 1,
+                     title = "Bile Acid Metabolism Score")
+
+ggsave(p,filename = "human liver data/Bile Acid Metabolism Score (human spatial).pdf",width =6,height = 4,dpi = 300)
+ggsave(p,filename = "human liver data/Bile Acid Metabolism Score (human spatial).png",width =6,height = 4,dpi = 300)
+
+#
+p<-DbDynamicsPlot.human(srt = human.spatial,
+                        feature = "Peroxisomal.Lipid.Metabolism",
+                     y.label = "Module Score",
+                     pt.size = 1,
+                     title = "Peroxisomal Lipid Metabolism Score")
+
+ggsave(p,filename = "human liver data/Peroxisomal Lipid Metabolism Score (human spatial).pdf",width =6,height = 4,dpi = 300)
+ggsave(p,filename = "human liver data/Peroxisomal Lipid Metabolism Score (human spatial).png",width =6,height = 4,dpi = 300)
+
+#
+p<-DbDynamicsPlot.human(srt = human.spatial,
+                        feature = "Hemostasis",
+                     y.label = "Module Score",
+                     pt.size = 1,
+                     title = "Hemostasis Score")
+
+ggsave(p,filename = "human liver data/Hemostasis Score (human spatial).pdf",width =6,height = 4,dpi = 300)
+ggsave(p,filename = "human liver data/Hemostasis Score (human spatial).png",width =6,height = 4,dpi = 300)
+
+#
+p<-DbDynamicsPlot.human(srt = human.spatial,
+                        feature = "Platelet.Activation",
+                     y.label = "Module Score",
+                     pt.size = 1,
+                     title = "Platelet Activation Score")
+
+ggsave(p,filename = "human liver data/Platelet Activation Score (human spatial).pdf",width =6,height = 4,dpi = 300)
+ggsave(p,filename = "human liver data/Platelet Activation Score (human spatial).png",width =6,height = 4,dpi = 300)
+
+#
+p<-DbDynamicsPlot.human(srt = human.spatial,
+                        feature = "DAP12.Interaction",
+                     y.label = "Module Score",
+                     pt.size = 1,
+                     title = "DAP12 Interaction Score")
+
+ggsave(p,filename = "human liver data/DAP12 Interaction Score (human spatial).pdf",width =6,height = 4,dpi = 300)
+ggsave(p,filename = "human liver data/DAP12 Interaction Score (human spatial).png",width =6,height = 4,dpi = 300)
+
+rm(ht1,p)
+
+p<-DbDynamicsPlot.human(srt = human.spatial,
+                        feature = "drug.metabolism",
+                     y.label = "Module Score",
+                     pt.size = 1,
+                     title = "Drug Metabolism Score")
+
+ggsave(p,filename = "human liver data/Drug Metabolism Score (human spatial).pdf",width =6,height = 4,dpi = 300)
+ggsave(p,filename = "human liver data/Drug Metabolism Score (human spatial).png",width =6,height = 4,dpi = 300)
+```
+
+```{r,drug gene,include=FALSE}
+idx<-c("CYP39A1","CYP17A1","CYP2D6","CYP1A2","CYP8B1",
+"NR1I3","NAT1")
+
+idx<-intersect(rownames(human.spatial@assays$DeNoise@counts),drug.gene)
+
+for (i in seq_along(idx)) {
+  
+  p<-DbDynamicsPlot.human(srt = human.spatial,
+                        feature = idx[i],assay = "DeNoise",
+                     pt.size = 1,
+                     title =  idx[i])
+
+ggsave(p,filename = paste0("human liver data/",idx[i],"(human spatial).pdf"),width =6,height = 4,dpi = 300)
+ggsave(p,filename = paste0("human liver data/",idx[i],"(human spatial).png"),width =6,height = 4,dpi = 300)
+  
+}
+
+
+```
+
+```{r}
+save(human.spatial,file ="human spatial data.RData" )
+```
+
+# human scRNA(HNI)
+
+## load the data
+
+```{r,include=FALSE}
+load("integrated HNI data.RData")
+
+# add age metadata
+
+integrated.dat$age<-0
+
+integrated.dat$age[which(integrated.dat$Sample.ID=="HNI_30")]<-"Young"
+integrated.dat$age[which(integrated.dat$Sample.ID=="HNI_36")]<-"Young"
+integrated.dat$age[which(integrated.dat$Sample.ID=="HNI_37")]<-"Young"
+
+integrated.dat$age[which(integrated.dat$Sample.ID=="HNI_35")]<-"Old"
+integrated.dat$age[which(integrated.dat$Sample.ID=="HNI_38")]<-"Old"
+integrated.dat$age[which(integrated.dat$Sample.ID=="HNI_39")]<-"Old"
+
+# remone HNI_30
+Idents(integrated.dat)<-"Sample.ID"
+integrated.dat<-subset(integrated.dat,Sample.ID != "HNI_30")
+```
+
+## hepatocyte
+
+```{r,get hepatocyte,include=FALSE}
+integrated.dat$Cell.type<-as.character(integrated.dat$Cell.type)
+Idents(integrated.dat)<-"Cell.type"
+
+human.hepa<-subset(integrated.dat,idents="Hepatocyte")%>% NormalizeData(normalization.method = "LogNormalize")%>%
+ FindVariableFeatures(selection.method = "vst",
+                      nfeatures = 2000)%>%
+ ScaleData(verbose = F,
+           vars.to.regress =c("nCount_RNA","nFeature_RNA"))%>%
+  RunPCA(npcs = 50)%>%
+  RunHarmony(group.by.vars ="Sample.ID" ,
+             dims.use = 1:10,max.iter.harmony = 50,
+             plot_convergence=F) %>%
+   RunUMAP( dims = 1:5,
+            reduction = "harmony")
+
+human.hepa<-RunDM(human.hepa,reduction = "umap",dims = 1:2)
+
+human.hepa<-RunSlingshot(human.hepa,reduction = "dm",group.by = "age",start = "Young",end = "Old",show_plot = F)
+
+human.hepa$Aging.Trajectory<-human.hepa$Lineage1
+
+human.hepa$Aging.Trajectory<-scale(human.hepa$Aging.Trajectory,scale = T,center = T)
+
+save(human.hepa,file = "human hepatocyte data.RData")
+```
+
+```{r,add module score,include=FALSE}
+human.hepa<-AddModuleScore_UCell(human.hepa,
+                                    features = drug.gene.cyp.list,
+                                    name = "",
+                                    BPPARAM = BiocParallel::SnowParam(workers = 1) )
+
+human.hepa<-AddModuleScore_UCell(human.hepa,
+                                    features = marker.list,
+                                    name = "",
+                                    BPPARAM = BiocParallel::SnowParam(workers = 1) )
+```
+
+```{r,feature stat plot for module score,include=FALSE}
+human.hepa$age<-factor(human.hepa$age,levels = c("Young","Old"))
+
+p<-FeatureStatPlot(human.hepa,
+                group.by ="age",
+                stat.by = "TCA.cycle",
+                add_trend = T,
+                add_box = T,
+                comparisons =list(c("Young","Old")),
+                multiplegroup_comparisons = F,
+                palette =  "lancet",
+                title = "Human Primary Hepatocyte",
+                ylab = "Module score",
+                theme_args = list(plot.title = element_text(
+              face = "bold",size = 14,hjust = 0.5)))
+
+ggsave(p,dpi = 300,height = 5,width = 5,
+       filename = "human liver data/TCA.cycle(hepatocyte).pdf")
+ggsave(p,dpi = 300,height = 5,width = 5,
+       filename = "human liver data/TCA.cycle(hepatocyte).png")
+
+
+p<-FeatureStatPlot(human.hepa,
+                group.by ="age",
+                stat.by = "Fatty.Acid.Metabolism",
+                add_trend = T,
+                add_box = T,
+                comparisons =list(c("Young","Old")),
+                multiplegroup_comparisons = F,
+                palette =  "lancet",
+                title = "Human Primary Hepatocyte",
+                ylab = "Module score",
+                theme_args = list(plot.title = element_text(
+              face = "bold",size = 14,hjust = 0.5)))
+
+ggsave(p,dpi = 300,height = 5,width = 5,
+       filename = "human liver data/Fatty.Acid.Metabolism(hepatocyte).pdf")
+ggsave(p,dpi = 300,height = 5,width = 5,
+       filename = "human liver data/Fatty.Acid.Metabolism(hepatocyte).png")
+
+
+
+p<-FeatureStatPlot(human.hepa,
+                group.by ="age",
+                stat.by = "Bile.Acid.Metabolism" ,
+                add_trend = T,
+                add_box = T,
+                comparisons =list(c("Young","Old")),
+                multiplegroup_comparisons = F,
+                palette =  "lancet",
+                title = "Human Primary Hepatocyte",
+                ylab = "Module score",
+                theme_args = list(plot.title = element_text(
+              face = "bold",size = 14,hjust = 0.5)))
+
+ggsave(p,dpi = 300,height = 5,width = 5,
+       filename = "human liver data/Bile.Acid.Metabolism(hepatocyte).pdf")
+ggsave(p,dpi = 300,height = 5,width = 5,
+       filename = "human liver data/Bile.Acid.Metabolism(hepatocyte).png")
+
+p<-FeatureStatPlot(human.hepa,
+                group.by ="age",
+                stat.by = "Peroxisomal.Lipid.Metabolism" ,
+                add_trend = T,
+                add_box = T,
+                comparisons =list(c("Young","Old")),
+                multiplegroup_comparisons = F,
+                palette =  "lancet",
+                title = "Human Primary Hepatocyte",
+                ylab = "Module score",
+                theme_args = list(plot.title = element_text(
+              face = "bold",size = 14,hjust = 0.5)))
+ggsave(p,dpi = 300,height = 5,width = 5,
+       filename = "human liver data/Peroxisomal.Lipid.Metabolism(hepatocyte).pdf")
+ggsave(p,dpi = 300,height = 5,width = 5,
+       filename = "human liver data/Peroxisomal.Lipid.Metabolism(hepatocyte).png")
+
+p<-FeatureStatPlot(human.hepa,
+                group.by ="age",
+                stat.by = "drug.metabolism",
+                add_trend = T,
+                add_box = T,
+                comparisons =list(c("Young","Old")),
+                multiplegroup_comparisons = F,
+                palette =  "lancet",
+                title = "Human Primary Hepatocyte",
+                ylab = "Module score",
+                theme_args = list(plot.title = element_text(
+              face = "bold",size = 14,hjust = 0.5)))
+ggsave(p,dpi = 300,height = 5,width = 5,
+       filename = "human liver data/drug.metabolism(hepatocyte).pdf")
+ggsave(p,dpi = 300,height = 5,width = 5,
+       filename = "human liver data/drug.metabolism(hepatocyte).png")
+
+
+rm(p)
+
+```
+
+```{r,cell dim plot and feature plot,include=FALSE}
+
+p<-CellDimPlot(human.hepa,group.by = "age",
+            palette = "lancet",reduction = "dm",
+            theme_use = "theme_blank",
+            pt.size = 1.5,
+            title = "Human Primary Hepatocyte", 
+            theme_args = list(plot.title = element_text(
+              face = "bold",size = 14,hjust = 0.5)))
+
+ggsave(p,dpi = 300,height = 5,width = 5,
+       filename = "human liver data/DM plot for age(hepatocyte).pdf")
+ggsave(p,dpi = 300,height = 5,width = 5,
+       filename = "human liver data/DM plot for age(hepatocyte).png")
+
+p<-FeatureDimPlot(human.hepa,features = "Lineage1",
+            palette = "plasma",reduction = "dm",
+            theme_use = "theme_blank",
+            pt.size = 1.5,
+            title = "Human Primary Hepatocyte", 
+            theme_args = list(plot.title = element_text(
+              face = "bold",size = 14,hjust = 0.5)))
+
+ggsave(p,dpi = 300,height = 5,width = 5,
+       filename = "human liver data/DM plot for Aging.Trajectory(hepatocyte).pdf")
+ggsave(p,dpi = 300,height = 5,width = 5,
+       filename = "human liver data/DM plot for Aging.Trajectory(hepatocyte).png")
+
+p<-scDbDynamicsPlot.human(human.hepa,feature = "TCA.cycle",y.label = "Module Score",pt.size = 1.5,title ="TCA cycle" )
+
+ggsave(p,dpi = 300,height = 5,width = 6,
+       filename = "human liver data/trajectory plot for TCA cycle(hepatocyte).pdf")
+ggsave(p,dpi = 300,height = 5,width = 6,
+       filename = "human liver data/trajectory plot for TCA cycle(hepatocyte).png")
+
+source("scDbDynamicsPlot.human.R")
+
+p<-scDbDynamicsPlot.human(human.hepa,feature = "Peroxisomal.Lipid.Metabolism",y.label = "Module Score",pt.size = 1.5,title ="Peroxisomal Lipid Metabolism" )
+
+ggsave(p,dpi = 300,height = 5,width = 6,
+       filename = "human liver data/trajectory plot for Peroxisomal.Lipid.Metabolism(hepatocyte).pdf")
+ggsave(p,dpi = 300,height = 5,width = 6,
+       filename = "human liver data/trajectory plot for Peroxisomal.Lipid.Metabolism(hepatocyte).png")
+
+p<-scDbDynamicsPlot.human(human.hepa,feature = "drug.metabolism",y.label = "Module Score",pt.size = 1.5,title ="Drug Metabolism" )
+
+ggsave(p,dpi = 300,height = 5,width = 6,
+       filename = "human liver data/trajectory plot for drug.metabolism(hepatocyte).pdf")
+ggsave(p,dpi = 300,height = 5,width = 6,
+       filename = "human liver data/trajectory plot for drug.metabolism(hepatocyte).png")
+
+p<-scDbDynamicsPlot.human(human.hepa,feature = "Bile.Acid.Metabolism",y.label = "Module Score",pt.size = 1.5,title ="Bile Acid Metabolism" )
+
+ggsave(p,dpi = 300,height = 5,width = 6,
+       filename = "human liver data/trajectory plot for Bile.Acid.Metabolism(hepatocyte).pdf")
+ggsave(p,dpi = 300,height = 5,width = 6,
+       filename = "human liver data/trajectory plot for Bile.Acid.Metabolism(hepatocyte).png")
+
+p<-scDbDynamicsPlot.human(human.hepa,feature = "Fatty.Acid.Metabolism",y.label = "Module Score",pt.size = 1.5,title ="Fatty Acid Metabolism" )
+
+ggsave(p,dpi = 300,height = 5,width = 6,
+       filename = "human liver data/trajectory plot for Fatty Acid Metabolism(hepatocyte).pdf")
+ggsave(p,dpi = 300,height = 5,width = 6,
+       filename = "human liver data/trajectory plot for Fatty Acid Metabolism(hepatocyte).png")
+
+p<-scDbDynamicsPlot.human(human.hepa,feature = "TCA.cycle",y.label = "Module Score",pt.size = 1.5,title ="TCA cycle" )
+
+ggsave(p,dpi = 300,height = 5,width = 6,
+       filename = "human liver data/trajectory plot for TCA cycle(hepatocyte).pdf")
+ggsave(p,dpi = 300,height = 5,width = 6,
+       filename = "human liver data/trajectory plot for TCA cycle(hepatocyte).png")
+```
+
+# LD data
+
+```{r}
+load("H:/Celia group/HNI/integrated LD.RData")
+```
+
+```{r,add module score,include=FALSE}
+drug.gene.cyp<-unique(drug.gene[grepl("CYP",drug.gene)])
+drug.gene.cyp.list<-list("drug.metabolism"= unique(drug.gene.cyp))
+
+integrated.LD<-AddModuleScore_UCell(integrated.LD,
+                                    features =drug.gene.cyp.list,
+                                    name = "",
+                                    BPPARAM = BiocParallel::SnowParam(workers = 1) )
+
+integrated.LD<-AddModuleScore_UCell(integrated.LD,
+                                    features = marker.list,
+                                    name = "",
+                                    BPPARAM = BiocParallel::SnowParam(workers = 1) )
+```
+
+```{r,feature stst plot,include=FALSE}
+integrated.LD$condition<-factor(integrated.LD$condition,levels = c("2n_NF", "4n_NF", "2n_LF", "4n_LF", "2n_HF",  "4n_HF"  ))
+
+p<-FeatureStatPlot(integrated.LD,
+                group.by ="condition",
+                stat.by = "TCA.cycle",
+                add_trend = T,
+                add_box = T,plot_type = "box",
+                comparisons =list(c("2n_NF", "4n_NF"),
+                                
+                                  c("2n_HF", "4n_HF")),
+                multiplegroup_comparisons = F,
+                palette =  "jama",
+                title = "Human Hepatocyte Culture",
+                ylab = "Module score",
+                theme_args = list(plot.title = element_text(
+              face = "bold",size = 14,hjust = 0.5)))
+
+ggsave(p,dpi = 300,height = 5,width = 6,
+       filename = "human liver data/TCA.cycle(Hepatocyte Culture).pdf")
+ggsave(p,dpi = 300,height = 5,width = 6,
+       filename = "human liver data/TCA.cycle(Hepatocyte Culture).png")
+
+p<-FeatureStatPlot(integrated.LD,
+                group.by ="condition",
+                stat.by = "Fatty.Acid.Metabolism",
+                add_trend = T,
+                add_box = T,plot_type = "box",
+                comparisons =list(c("2n_NF", "4n_NF"),
+                               
+                                  c("2n_HF", "4n_HF")),
+                multiplegroup_comparisons = F,
+                palette =  "jama",
+                title = "Human Hepatocyte Culture",
+                ylab = "Module score",
+                theme_args = list(plot.title = element_text(
+              face = "bold",size = 14,hjust = 0.5)))
+
+ggsave(p,dpi = 300,height = 5,width = 6,
+       filename = "human liver data/Fatty.Acid.Metabolism(Hepatocyte Culture).pdf")
+ggsave(p,dpi = 300,height = 5,width = 6,
+       filename = "human liver data/Fatty.Acid.Metabolism(Hepatocyte Culture).png")
+
+
+p<-FeatureStatPlot(integrated.LD,
+                group.by ="condition",
+                stat.by = "Bile.Acid.Metabolism",
+                add_trend = T,
+                add_box = T,plot_type = "box",
+                comparisons =list(c("2n_NF", "4n_NF"),
+                                 
+                                  c("2n_HF", "4n_HF")),
+                multiplegroup_comparisons = F,
+                palette =  "jama",
+                title = "Human Hepatocyte Culture",
+                ylab = "Module score",
+                theme_args = list(plot.title = element_text(
+              face = "bold",size = 14,hjust = 0.5)))
+
+ggsave(p,dpi = 300,height = 5,width = 6,
+       filename = "human liver data/Bile.Acid.Metabolism(Hepatocyte Culture).pdf")
+ggsave(p,dpi = 300,height = 5,width = 6,
+       filename = "human liver data/Bile.Acid.Metabolism(Hepatocyte Culture).png")
+
+p<-FeatureStatPlot(integrated.LD,
+                group.by ="condition",
+                stat.by = "Peroxisomal.Lipid.Metabolism",
+                add_trend = T,
+                add_box = T,
+                comparisons =list(c("2n_NF", "4n_NF"),
+                               
+                                  c("2n_HF", "4n_HF")),
+                multiplegroup_comparisons = F,
+                palette =  "jama",plot_type = "box",
+                title = "Human Hepatocyte Culture",
+                ylab = "Module score",
+                theme_args = list(plot.title = element_text(
+              face = "bold",size = 14,hjust = 0.5)))
+
+ggsave(p,dpi = 300,height = 5,width = 6,
+       filename = "human liver data/Peroxisomal.Lipid.Metabolism(Hepatocyte Culture).pdf")
+ggsave(p,dpi = 300,height = 5,width = 6,
+       filename = "human liver data/Peroxisomal.Lipid.Metabolism(Hepatocyte Culture).png")
+
+p<-FeatureStatPlot(integrated.LD,
+                group.by ="condition",
+                stat.by = "drug.metabolism",
+                add_trend = T,
+                add_box = T,plot_type = "box",
+                comparisons =list(c("2n_NF", "4n_NF"),
+                              
+                                  c("2n_HF", "4n_HF")),
+                multiplegroup_comparisons = F,
+                palette =  "jama",
+                title = "Human Hepatocyte Culture",
+                ylab = "Module score",
+                theme_args = list(plot.title = element_text(
+              face = "bold",size = 14,hjust = 0.5)))
+
+ggsave(p,dpi = 300,height = 5,width = 6,
+       filename = "human liver data/drug.metabolism(Hepatocyte Culture).pdf")
+ggsave(p,dpi = 300,height = 5,width = 6,
+       filename = "human liver data/drug.metabolism(Hepatocyte Culture).png")
+```
+
+```{r,cell dimplot,include=FALSE}
+p<-CellDimPlot(integrated.LD,group.by = "condition",
+            palette = "jama",pt.size = 1.5,
+            title =  "Human Hepatocyte Culture",
+            theme_args = list(plot.title = element_text(
+              face = "bold",size = 14,hjust = 0.5)))
+
+ggsave(p,dpi = 300,height = 5,width = 6,
+       filename = "human liver data/dimplot for condition(Hepatocyte Culture).pdf")
+ggsave(p,dpi = 300,height = 5,width = 6,
+       filename = "human liver data/dimplot for condition(Hepatocyte Culture).png")
+
+p<-CellStatPlot(integrated.LD,stat.by = "condition",
+             group.by ="age",palette = "jama" ,
+             title =  "Human Hepatocyte Culture",
+            theme_args = list(plot.title = element_text(
+              face = "bold",size = 14,hjust = 0.5)))
+
+ggsave(p,dpi = 300,height = 5,width = 6,
+       filename = "human liver data/cellstat for condition(Hepatocyte Culture).pdf")
+ggsave(p,dpi = 300,height = 5,width = 6,
+       filename = "human liver data/cellstat  for condition(Hepatocyte Culture).png")
+```

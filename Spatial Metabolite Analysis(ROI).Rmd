@@ -1,0 +1,112 @@
+---
+title: "Spatial metabolite"
+output: html_notebook
+---
+
+# create metabolite seu obj
+
+```{r}
+raw.meta<-read.csv(file = "chow_diet_ROI.csv",row.names = 1)
+```
+
+```{r}
+# make metabolite count matrix
+meta.count<-as.data.frame(raw.meta[,c(5:69938)])
+rownames(meta.count)<-rownames(raw.meta)
+meta.count<-as.data.frame(apply(meta.count,2, round))
+
+
+# make spatial coordinate
+
+barcode<-colnames(meta.count)
+barcode<-str_remove(barcode,"ROI.1_")
+barcode<-str_remove(barcode,"ROI.2_")
+barcode<-str_remove(barcode,"ROI.3_")
+barcode<-str_remove(barcode,"ROI.4_")
+barcode<-str_remove(barcode,"ROI.5_")
+barcode<-str_remove(barcode,"ROI.6_")
+barcode<-strsplit(barcode,"_")
+barcode<-as.data.frame(do.call(rbind,barcode))
+barcode<-barcode[,c(1:2)]
+colnames(barcode)<-c("spatial_1","spatial_2")
+barcode$spatial_1<-str_remove_all(barcode$spatial_1,"x")
+barcode$spatial_2<-str_remove_all(barcode$spatial_2,"y")
+barcode$spatial_1<-as.numeric(barcode$spatial_1)
+barcode$spatial_2<-as.numeric(barcode$spatial_2)
+rownames(barcode)<-colnames(meta.count)
+
+```
+
+```{r,create seu,include=FALSE}
+meta.seu<-CreateSeuratObject(counts = meta.count,
+                            min.features = 1,
+                            assay = "Metabolite")
+
+meta.seu[["spatial"]]<- CreateDimReducObject(
+  embeddings = as.matrix(barcode[which(rownames(barcode) %in% colnames(meta.seu)),]), 
+  key = "spatial_", assay = "Metabolite")
+
+meta.seu$barcode<-colnames(meta.seu)
+
+meta.seu$age<-0
+meta.seu$age[grepl("ROI.1",meta.seu$barcode)]<-"old"
+meta.seu$age[grepl("ROI.2",meta.seu$barcode)]<-"old"
+meta.seu$age[grepl("ROI.3",meta.seu$barcode)]<-"old"
+meta.seu$age[grepl("ROI.4",meta.seu$barcode)]<-"young"
+meta.seu$age[grepl("ROI.5",meta.seu$barcode)]<-"young"
+meta.seu$age[grepl("ROI.6",meta.seu$barcode)]<-"young"
+
+
+meta.seu$ROI<-0
+meta.seu$ROI[grepl("ROI.1",meta.seu$barcode)]<-"ROI.1"
+meta.seu$ROI[grepl("ROI.2",meta.seu$barcode)]<-"ROI.2"
+meta.seu$ROI[grepl("ROI.3",meta.seu$barcode)]<-"ROI.3"
+meta.seu$ROI[grepl("ROI.4",meta.seu$barcode)]<-"ROI.4"
+meta.seu$ROI[grepl("ROI.5",meta.seu$barcode)]<-"ROI.5"
+meta.seu$ROI[grepl("ROI.6",meta.seu$barcode)]<-"ROI.6"
+```
+
+```{r}
+FeatureStatPlot(meta.seu, stat.by = "nCount_Metabolite", 
+                group.by = "ROI", add_box = TRUE,
+                palette  ="Paired")
+FeatureStatPlot(meta.seu, stat.by = "nFeature_Metabolite", 
+                group.by = "ROI", add_box = TRUE,
+                palette  ="Paired")
+0
+```
+
+```{r,include=FALSE}
+
+meta.seu<-subset(meta.seu,nCount_Metabolite>=10000000 & nFeature_Metabolite >=40)
+
+meta.seu<- NormalizeData(meta.seu,
+                         normalization.method = "LogNormalize", 
+                         scale.factor = 1000000)
+
+meta.seu<- FindVariableFeatures(meta.seu, 
+                                 selection.method = "vst",
+                                 nfeatures = 20)
+
+meta.seu<- ScaleData(meta.seu,vars.to.regress =c("nCount_Metabolite"),verbose = F,features = rownames(meta.seu))
+
+meta.seu<- RunPCA(meta.seu, npcs = 5,features = rownames(meta.seu),
+                  verbose = FALSE)%>%
+  RunHarmony(group.by.vars ="ROI" ,
+             dims.use = 1:5,max.iter.harmony = 50,
+             plot_convergence=F)%>%RunUMAP( dims = 1:5,
+            reduction = "harmony")
+
+save(meta.seu,file = "metabolomics data.RData")
+
+meta<-meta.seu@meta.data
+
+write.csv(meta,file = "MetaData for Spatial Metabolomics.csv")
+```
+
+
+
+
+
+
+
