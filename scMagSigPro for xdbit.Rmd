@@ -1,0 +1,181 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+#scMagSigPro
+
+```{r,include=FALSE}
+DefaultAssay(integrated.xDbit)<-"RNA"
+xdbit.sce<-as.SingleCellExperiment(integrated.xDbit)
+```
+
+```{r,include=FALSE}
+xdbit.mag.obj<-as_scmp(object = xdbit.sce,from = "sce",
+                       align_pseudotime = T,
+                       verbose = T,
+                       additional_params = list(labels_exist = TRUE,
+                                                exist_ptime_col = "PV.CV.Trajectory",
+                                                exist_path_col = "age"))
+
+xdbit.mag.obj <- sc.squeeze(xdbit.mag.obj)
+
+rm(xdbit.sce)
+```
+
+```{r,plot bin,include=FALSE}
+p<-plotBinTile(xdbit.mag.obj)+
+  ggtitle("Binned Pseudotime by scMagSigPro")+
+  ylab("Group")+xlab("Binned Pseudotime ")+
+  scale_fill_viridis(name = "Bin Size")+
+  theme(plot.title = element_text(face = "bold",size = 14,hjust = 0.5),
+        axis.title =element_text(face = "bold",size = 12),
+        axis.text = element_text(size = 12))
+ggsave(p,filename = "R figures/scMagSigPro/pseudotime bins.pdf",width = 6,height = 4,dpi = 300)
+ggsave(p,filename = "R figures/scMagSigPro/pseudotime bins.png",width = 6,height = 4,dpi = 300)  
+```
+
+```{r,set degree,include=FALSE}
+xdbit.mag.obj<- sc.set.poly(xdbit.mag.obj, poly_degree =3)
+
+save(xdbit.mag.obj,file ="scMagSigPro obj.RData" )
+```
+
+```{r,run scMagSigPro,include=FALSE}
+# Detect non-flat profiles
+xdbit.mag.obj <- sc.p.vector(xdbit.mag.obj,
+                             offset = TRUE, 
+                             p_value = 0.05, 
+                             min_na = 10,
+                             verbose =T,
+                             log_offset = TRUE
+)
+
+# Model refinement
+
+xdbit.mag.obj <- sc.t.fit(xdbit.mag.obj, verbose = TRUE)
+
+save(xdbit.mag.obj,file ="scMagSigPro obj.RData" )
+```
+
+```{r,get sig gene,include=FALSE}
+xdbit.mag.obj <- sc.filter(
+  scmpObj = xdbit.mag.obj ,
+  rsq = 0.7,
+  vars = "groups",
+  intercept = "dummy",
+  includeInflu = F
+)
+```
+
+
+```{r,cluster the sig scMagSigPro gene,include=FALSE}
+xdbit.mag.obj<- sc.cluster.trend(
+  xdbit.mag.obj,
+  cluster_by = "counts",
+  geneSet = "union",
+  k =6
+)
+
+p<-plotTrendCluster(
+  scmpObj =xdbit.mag.obj,
+  plot = "counts",
+  logs = TRUE,
+  summary_mode='mean',
+  smoothness = 0.01,
+  verbose = FALSE,
+  lines = TRUE
+)
+
+p<-p+ggtitle("Dynamical Gene Expression over PV-CV axis")+ylab("Binned Pseudobulk Expression")+
+  xlab("Pooled PV-CV Trajectory")+
+  theme(plot.title = element_text(face = "bold",size = 14,hjust = 0.5),
+        axis.text.x = element_text(angle = 0),
+        axis.title =element_text(face = "bold",size = 12),
+        axis.text = element_text(size = 12))
+
+
+ggsave(p,filename = "R figures/scMagSigPro/clustered scMagSigPro Sig Genes.png",width = 7,height = 5,dpi = 300) 
+ggsave(p,filename = "R figures/scMagSigPro/clustered scMagSigPro Sig Genes.pdf",width = 7,height = 5,dpi = 300) 
+```
+
+```{r,extract the sig genes}
+sig.mag.gene<-as.data.frame( do.call(rbind,xdbit.mag.obj@Significant@clusters))
+
+sig.mag.gene$gene=rownames(sig.mag.gene)
+colnames(sig.mag.gene)[1]<-"cluster"
+
+save(sig.mag.gene,file = "sig scMagSigPro gene.RData")
+write.csv(sig.mag.gene,file = "sig scMagSigPro gene.csv")
+
+magsig.out<-data.frame(pvalue=xdbit.mag.obj@Profile@p_values,
+                    adjust.p=xdbit.mag.obj@Profile@adj_p_values)
+magsig.out$gene<-rownames(magsig.out)
+magsig.out$Comparison<-"Old vs. Young"
+
+magsig.out<-magsig.out[which(rownames(magsig.out) %in% xdbit.mag.obj@Profile@non_flat),]
+
+magsig.out<-cbind(magsig.out,xdbit.mag.obj@Estimate@coefficient_matrix)
+magsig.out<-cbind(magsig.out, xdbit.mag.obj@Estimate@significance_matrix)
+write.csv(sig.mag.gene,file = "original scMagSigPro output.csv")
+
+sig.magsig.out<-magsig.out[which(rownames(magsig.out) %in% xdbit.mag.obj@Significant@genes[["youngvsold"]]),] 
+write.csv(sig.mag.gene,file = "significant scMagSigPro output.csv")
+```
+
+```{r,add lineage for seu}
+integrated.xDbit$Young.Trajectory<-integrated.xDbit$PV.CV.Trajectory
+integrated.xDbit$Young.Trajectory[which(integrated.xDbit$age=="old")]<-NA
+
+integrated.xDbit$Old.Trajectory<-integrated.xDbit$PV.CV.Trajectory
+integrated.xDbit$Old.Trajectory[which(integrated.xDbit$age=="young")]<-NA
+```
+
+```{r,include=FALSE}
+integrated.xDbit <- RunDynamicFeatures(srt = integrated.xDbit, 
+                                       lineages = c("Young.Trajectory",                                                   "Old.Trajectory"),
+                                       features =sig.mag.gene$gene,assay = "DeNoise",
+                                       BPPARAM = BiocParallel::SnowParam(workers = 1))
+```
+
+```{r}
+cluster.gene<-paste0("Cluster_",sig.mag.gene$cluster)
+names(cluster.gene)<-sig.mag.gene$gene
+
+integrated.xDbit <- AnnotateFeatures(integrated.xDbit, species = "Mus_musculus", db = c("TF", "CSPA"))
+
+ht <- DynamicHeatmap(
+  srt =integrated.xDbit, 
+  lineages = c("Young.Trajectory", "Old.Trajectory"),
+  use_fitted = TRUE,  reverse_ht = F,
+  pseudotime_label = 25, 
+  feature_split = cluster.gene,
+  cluster_rows = TRUE,
+  min_expcells = 1,
+  r.sq = 0,
+  dev.expl = 0,
+  padjust = 1,pseudotime_palette = "plasma",
+  cell_annotation =c("age","liver.zonation"),
+  cell_annotation_palette = c("lancet","npg"),
+ # species = "Mus_musculus", db = "GO_BP",
+  #anno_terms = TRUE, 
+  anno_keys = F, 
+  anno_features = F,
+  feature_annotation = c("TF", "CSPA"),
+  feature_annotation_palcolor = list(c("gold", "steelblue"), c("forestgreen")),
+  height = 8, width = 2,
+  use_raster = T,
+  raster_by_magick = T,
+)
+pdf(file = "tmp.pdf",width = 16,height = 12)
+print(ht$plot)
+dev.off()
+
+save(integrated.xDbit,file = "filter data.Rdata")
+
+```
+
+
+
+
+
